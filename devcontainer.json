@@ -1,0 +1,46 @@
+{
+  "name": "CloudSurf Browser Farm",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    }
+  },
+
+  "forwardPorts": [7860, 6080, 6081, 6082, 6083, 6084, 6085, 6086, 6087, 6088, 6089, 6090],
+
+  "portsAttributes": {
+    "7860": {
+      "label": "CloudSurf UI",
+      "onAutoForward": "openBrowser",
+      "visibility": "private"
+    },
+    "6080": { "label": "NoVNC Profile 0", "visibility": "private" },
+    "6081": { "label": "NoVNC Profile 1", "visibility": "private" },
+    "6082": { "label": "NoVNC Profile 2", "visibility": "private" },
+    "6083": { "label": "NoVNC Profile 3", "visibility": "private" },
+    "6084": { "label": "NoVNC Profile 4", "visibility": "private" },
+    "6085": { "label": "NoVNC Profile 5", "visibility": "private" },
+    "6086": { "label": "NoVNC Profile 6", "visibility": "private" },
+    "6087": { "label": "NoVNC Profile 7", "visibility": "private" },
+    "6088": { "label": "NoVNC Profile 8", "visibility": "private" },
+    "6089": { "label": "NoVNC Profile 9", "visibility": "private" }
+  },
+
+  "postCreateCommand": "bash setup.sh",
+  "postStartCommand": "bash start.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+
+  "remoteEnv": {
+    "CLOUDSURF_HOST": "0.0.0.0"
+  }
+}

@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CloudSurf — Browser Farm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #080c10;
+    --surface:   #0d1117;
+    --card:      #111820;
+    --border:    #1e2d3d;
+    --accent:    #00d4ff;
+    --accent2:   #00ff88;
+    --accent3:   #ff4466;
+    --warn:      #ffaa00;
+    --text:      #c9d1d9;
+    --muted:     #5a6a7a;
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-ui:   'Space Grotesk', sans-serif;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; background:var(--bg); color:var(--text); font-family:var(--font-ui); }
+
+  /* ── Scanline overlay ── */
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:1000;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,255,0.015) 2px, rgba(0,212,255,0.015) 4px);
+  }
+
+  /* ── Layout ── */
+  .app { display:grid; grid-template-rows:56px 1fr; height:100vh; }
+
+  /* ── Header ── */
+  header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 24px; border-bottom:1px solid var(--border);
+    background:rgba(13,17,23,0.95); backdrop-filter:blur(8px);
+    position:sticky; top:0; z-index:100;
+  }
+  .logo { display:flex; align-items:center; gap:10px; }
+  .logo-icon { width:28px; height:28px; }
+  .logo-text { font-family:var(--font-mono); font-weight:700; font-size:15px; color:var(--accent); letter-spacing:0.08em; }
+  .logo-sub { font-size:11px; color:var(--muted); font-family:var(--font-mono); margin-left:4px; }
+  .header-status { display:flex; align-items:center; gap:20px; font-size:12px; font-family:var(--font-mono); }
+  .status-pill { display:flex; align-items:center; gap:6px; padding:4px 10px; border-radius:20px;
+    background:rgba(0,212,255,0.08); border:1px solid rgba(0,212,255,0.2); color:var(--accent); }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--accent2);
+    box-shadow:0 0 6px var(--accent2); animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+
+  /* ── Main ── */
+  main { overflow-y:auto; padding:28px 24px; display:grid; grid-template-columns:320px 1fr; gap:20px; align-content:start; }
+
+  /* ── Panel ── */
+  .panel {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:8px; overflow:hidden;
+  }
+  .panel-header {
+    padding:12px 16px; border-bottom:1px solid var(--border);
+    font-size:11px; font-family:var(--font-mono); color:var(--muted);
+    letter-spacing:0.1em; text-transform:uppercase;
+    display:flex; align-items:center; gap:8px;
+  }
+  .panel-header .icon { font-size:14px; }
+
+  /* ── Create form ── */
+  .create-form { padding:16px; display:flex; flex-direction:column; gap:12px; }
+  .field label { display:block; font-size:11px; font-family:var(--font-mono); color:var(--muted); margin-bottom:5px; letter-spacing:0.05em; }
+  .field input, .field textarea {
+    width:100%; padding:9px 12px;
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:5px; color:var(--text); font-family:var(--font-mono); font-size:13px;
+    outline:none; transition:border-color 0.2s;
+  }
+  .field input:focus, .field textarea:focus { border-color:var(--accent); }
+  .field textarea { resize:vertical; min-height:60px; }
+  .btn {
+    padding:9px 16px; border:none; border-radius:5px; cursor:pointer;
+    font-family:var(--font-mono); font-size:12px; font-weight:500;
+    letter-spacing:0.05em; transition:all 0.15s; display:flex; align-items:center; gap:6px;
+  }
+  .btn-primary {
+    background:var(--accent); color:#000;
+  }
+  .btn-primary:hover { background:#33ddff; transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,212,255,0.3); }
+  .btn-success { background:var(--accent2); color:#000; }
+  .btn-success:hover { background:#33ffaa; transform:translateY(-1px); }
+  .btn-danger { background:rgba(255,68,102,0.15); color:var(--accent3); border:1px solid rgba(255,68,102,0.3); }
+  .btn-danger:hover { background:rgba(255,68,102,0.25); }
+  .btn-ghost { background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--accent); color:var(--accent); }
+  .btn-sm { padding:5px 10px; font-size:11px; }
+  .btn-warn { background:rgba(255,170,0,0.12); color:var(--warn); border:1px solid rgba(255,170,0,0.25); }
+  .btn-warn:hover { background:rgba(255,170,0,0.22); }
+
+  /* ── Profile list ── */
+  .profile-list { padding:0; }
+  .profile-item {
+    padding:14px 16px; border-bottom:1px solid var(--border);
+    display:flex; align-items:center; gap:12px; cursor:pointer;
+    transition:background 0.15s; position:relative;
+  }
+  .profile-item:last-child { border-bottom:none; }
+  .profile-item:hover { background:rgba(0,212,255,0.04); }
+  .profile-item.selected { background:rgba(0,212,255,0.07); }
+  .profile-item.active .profile-indicator { background:var(--accent2); box-shadow:0 0 6px var(--accent2); }
+  .profile-indicator { width:8px; height:8px; border-radius:50%; background:var(--muted); flex-shrink:0; }
+  .profile-info { flex:1; min-width:0; }
+  .profile-name { font-size:13px; font-weight:500; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .profile-email { font-size:11px; font-family:var(--font-mono); color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .profile-badge { font-size:10px; font-family:var(--font-mono); padding:2px 7px; border-radius:10px; flex-shrink:0; }
+  .badge-active { background:rgba(0,255,136,0.1); color:var(--accent2); border:1px solid rgba(0,255,136,0.2); }
+  .badge-idle { background:rgba(90,106,122,0.15); color:var(--muted); border:1px solid var(--border); }
+
+  /* ── Right panel ── */
+  .right-panel { display:flex; flex-direction:column; gap:16px; }
+
+  /* ── Session detail ── */
+  .session-detail { padding:16px; }
+  .detail-header { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:16px; }
+  .detail-title { font-size:20px; font-weight:600; }
+  .detail-email { font-size:12px; font-family:var(--font-mono); color:var(--muted); margin-top:3px; }
+  .detail-actions { display:flex; gap:8px; flex-wrap:wrap; }
+
+  .info-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px; }
+  .info-item { background:var(--surface); border:1px solid var(--border); border-radius:5px; padding:10px 12px; }
+  .info-label { font-size:10px; font-family:var(--font-mono); color:var(--muted); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:4px; }
+  .info-value { font-size:13px; font-family:var(--font-mono); color:var(--text); }
+  .info-value.accent { color:var(--accent); }
+  .info-value.green { color:var(--accent2); }
+
+  /* ── VNC embed ── */
+  .vnc-container {
+    background:var(--surface); border:1px solid var(--border); border-radius:6px;
+    overflow:hidden; position:relative;
+  }
+  .vnc-header { padding:8px 12px; background:var(--card); border-bottom:1px solid var(--border);
+    font-size:11px; font-family:var(--font-mono); color:var(--muted); display:flex; justify-content:space-between; align-items:center; }
+  .vnc-frame { width:100%; height:520px; border:none; display:block; }
+  .vnc-placeholder {
+    height:240px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:12px; color:var(--muted); font-family:var(--font-mono); font-size:13px;
+  }
+  .vnc-placeholder .big-icon { font-size:48px; opacity:0.3; }
+
+  /* ── Keep-alive panel ── */
+  .keepalive-panel { padding:14px 16px; }
+  .keepalive-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .keepalive-label { font-size:12px; font-family:var(--font-mono); color:var(--muted); }
+  .interval-input { width:70px; padding:6px 8px; background:var(--surface); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:var(--font-mono); font-size:12px; outline:none; text-align:center; }
+  .ka-status { font-size:11px; font-family:var(--font-mono); padding:3px 8px; border-radius:10px; }
+  .ka-on { background:rgba(0,255,136,0.1); color:var(--accent2); }
+  .ka-off { background:rgba(90,106,122,0.1); color:var(--muted); }
+
+  /* ── Stats bar ── */
+  .stats-bar {
+    grid-column:1/-1; display:flex; gap:12px; flex-wrap:wrap;
+  }
+  .stat-card {
+    background:var(--card); border:1px solid var(--border); border-radius:6px;
+    padding:12px 18px; flex:1; min-width:120px;
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .stat-val { font-size:26px; font-weight:700; font-family:var(--font-mono); color:var(--accent); }
+  .stat-val.green { color:var(--accent2); }
+  .stat-lab { font-size:11px; color:var(--muted); letter-spacing:0.05em; text-transform:uppercase; }
+
+  /* ── Log terminal ── */
+  .log-terminal {
+    background:var(--surface); border:1px solid var(--border); border-radius:5px;
+    font-family:var(--font-mono); font-size:11px; color:#7ec8a0;
+    padding:10px 12px; height:100px; overflow-y:auto; line-height:1.6;
+  }
+  .log-line { margin:0; }
+  .log-line.err { color:var(--accent3); }
+  .log-line.warn { color:var(--warn); }
+  .log-line.info { color:var(--accent); }
+
+  /* ── Toast ── */
+  #toast-container { position:fixed; bottom:24px; right:24px; z-index:9999; display:flex; flex-direction:column; gap:8px; }
+  .toast {
+    padding:10px 16px; border-radius:6px; font-family:var(--font-mono); font-size:12px;
+    border-left:3px solid; animation:slideIn 0.2s ease; max-width:320px;
+  }
+  .toast.success { background:rgba(0,255,136,0.1); border-color:var(--accent2); color:var(--accent2); }
+  .toast.error   { background:rgba(255,68,102,0.1);  border-color:var(--accent3); color:var(--accent3); }
+  .toast.info    { background:rgba(0,212,255,0.1);   border-color:var(--accent);  color:var(--accent); }
+  @keyframes slideIn { from{transform:translateX(20px);opacity:0;} to{transform:translateX(0);opacity:1;} }
+
+  /* ── Empty state ── */
+  .empty { display:flex; flex-direction:column; align-items:center; justify-content:center;
+    height:200px; gap:10px; color:var(--muted); font-family:var(--font-mono); font-size:12px; }
+  .empty-icon { font-size:36px; opacity:0.25; }
+
+  /* ── Responsive ── */
+  @media(max-width:768px) { main { grid-template-columns:1fr; } }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width:6px; height:6px; }
+  ::-webkit-scrollbar-track { background:var(--surface); }
+  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+
+  .colab-tip {
+    background:rgba(255,170,0,0.06); border:1px solid rgba(255,170,0,0.2);
+    border-radius:6px; padding:12px 14px; font-size:12px; font-family:var(--font-mono);
+    color:var(--warn); line-height:1.6;
+  }
+  .colab-tip strong { display:block; margin-bottom:4px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <svg class="logo-icon" viewBox="0 0 28 28" fill="none">
+        <circle cx="14" cy="14" r="13" stroke="#00d4ff" stroke-width="1.5"/>
+        <path d="M7 14c0-3.87 3.13-7 7-7s7 3.13 7 7" stroke="#00d4ff" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="14" cy="14" r="3" fill="#00d4ff"/>
+        <path d="M14 17v4M11 21h6" stroke="#00d4ff" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span class="logo-text">CLOUDSURF</span>
+      <span class="logo-sub">// browser farm</span>
+    </div>
+    <div class="header-status">
+      <div class="status-pill">
+        <div class="dot"></div>
+        <span id="hdr-running">0 running</span>
+      </div>
+      <span id="hdr-time" style="color:var(--muted);font-size:11px;"></span>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main>
+
+    <!-- Stats bar -->
+    <div class="stats-bar">
+      <div class="stat-card">
+        <div class="stat-val green" id="stat-active">0</div>
+        <div class="stat-lab">Active Sessions</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val" id="stat-total">0</div>
+        <div class="stat-lab">Total Profiles</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val" id="stat-hours">0h</div>
+        <div class="stat-lab">Est. Free Compute</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val" id="stat-ka">0</div>
+        <div class="stat-lab">Keep-Alive Active</div>
+      </div>
+    </div>
+
+    <!-- Left column -->
+    <div style="display:flex;flex-direction:column;gap:16px;">
+
+      <!-- Create profile -->
+      <div class="panel">
+        <div class="panel-header"><span class="icon">⊕</span> New Browser Profile</div>
+        <div class="create-form">
+          <div class="field">
+            <label>PROFILE NAME</label>
+            <input id="new-name" type="text" placeholder="e.g. Gmail Account 3"/>
+          </div>
+          <div class="field">
+            <label>EMAIL (optional)</label>
+            <input id="new-email" type="text" placeholder="user@gmail.com"/>
+          </div>
+          <div class="field">
+            <label>NOTES (optional)</label>
+            <textarea id="new-notes" placeholder="Colab account #3, EU region..."></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="createProfile()">
+            <span>▸</span> Create Profile
+          </button>
+        </div>
+      </div>
+
+      <!-- Profile list -->
+      <div class="panel">
+        <div class="panel-header"><span class="icon">◫</span> Profiles <span id="profile-count" style="margin-left:auto;background:rgba(0,212,255,0.1);padding:2px 8px;border-radius:10px;font-size:10px;color:var(--accent);">0</span></div>
+        <div class="profile-list" id="profile-list">
+          <div class="empty"><div class="empty-icon">⬡</div>No profiles yet</div>
+        </div>
+      </div>
+
+      <!-- Colab tip -->
+      <div class="colab-tip">
+        <strong>⚡ Colab Power User Tip</strong>
+        1. Create one profile per Gmail account<br>
+        2. Start all profiles → open each → log into Colab<br>
+        3. Upload your notebook → Run all cells<br>
+        4. Enable Keep-Alive to prevent disconnects<br>
+        5. Repeat across all accounts = free parallel GPUs!
+      </div>
+    </div>
+
+    <!-- Right column -->
+    <div class="right-panel" id="right-panel">
+      <div class="panel">
+        <div class="vnc-placeholder">
+          <div class="big-icon">⬡</div>
+          <span>Select a profile to manage</span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script>
+const API = '';  // same origin
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let profiles = [];
+let sessions = {};
+let selectedId = null;
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+async function init() {
+  await refresh();
+  setInterval(refresh, 4000);
+  setInterval(() => {
+    document.getElementById('hdr-time').textContent = new Date().toLocaleTimeString();
+  }, 1000);
+}
+
+async function refresh() {
+  try {
+    const [pRes, sRes] = await Promise.all([
+      fetch(`${API}/api/profiles`),
+      fetch(`${API}/api/sessions`)
+    ]);
+    profiles = await pRes.json();
+    sessions = await sRes.json();
+    renderProfiles();
+    updateStats();
+    if (selectedId) renderDetail(selectedId);
+  } catch(e) {
+    console.warn('Refresh error:', e);
+  }
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────────
+function updateStats() {
+  const active = Object.keys(sessions).length;
+  const total  = profiles.length;
+  const kaCount = Object.values(sessions).filter(s => s.anti_disconnect).length;
+  document.getElementById('stat-active').textContent = active;
+  document.getElementById('stat-total').textContent  = total;
+  document.getElementById('stat-hours').textContent  = `${active * 5}h`;
+  document.getElementById('stat-ka').textContent     = kaCount;
+  document.getElementById('hdr-running').textContent = `${active} running`;
+  document.getElementById('profile-count').textContent = total;
+}
+
+// ── Profile list ───────────────────────────────────────────────────────────────
+function renderProfiles() {
+  const el = document.getElementById('profile-list');
+  if (!profiles.length) {
+    el.innerHTML = `<div class="empty"><div class="empty-icon">⬡</div>No profiles yet</div>`;
+    return;
+  }
+  el.innerHTML = profiles.map(p => {
+    const running = sessions[p.id];
+    return `
+    <div class="profile-item ${running ? 'active' : ''} ${selectedId === p.id ? 'selected' : ''}" onclick="selectProfile('${p.id}')">
+      <div class="profile-indicator"></div>
+      <div class="profile-info">
+        <div class="profile-name">${esc(p.name)}</div>
+        <div class="profile-email">${esc(p.email || p.id)}</div>
+      </div>
+      <span class="profile-badge ${running ? 'badge-active' : 'badge-idle'}">${running ? 'LIVE' : 'IDLE'}</span>
+    </div>`;
+  }).join('');
+}
+
+function selectProfile(id) {
+  selectedId = id;
+  renderProfiles();
+  renderDetail(id);
+}
+
+// ── Detail / VNC panel ────────────────────────────────────────────────────────
+function renderDetail(id) {
+  const profile = profiles.find(p => p.id === id);
+  if (!profile) return;
+  const sess = sessions[id];
+  const isRunning = !!sess;
+  const ka = sess?.anti_disconnect;
+
+  const infoGrid = isRunning ? `
+    <div class="info-grid">
+      <div class="info-item"><div class="info-label">Display</div><div class="info-value accent">${sess.display}</div></div>
+      <div class="info-item"><div class="info-label">VNC Port</div><div class="info-value">${sess.vnc_port}</div></div>
+      <div class="info-item"><div class="info-label">NoVNC Port</div><div class="info-value accent">${sess.novnc_port}</div></div>
+      <div class="info-item"><div class="info-label">Status</div><div class="info-value green">● RUNNING</div></div>
+    </div>` : '';
+
+  const vncPanel = isRunning ? `
+    <div class="vnc-container">
+      <div class="vnc-header">
+        <span>🖥 Remote Browser — ${esc(profile.name)}</span>
+        <a href="${sess.novnc_url}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;">⊕ open full tab</a>
+      </div>
+      <iframe class="vnc-frame" src="${sess.novnc_url}" allow="fullscreen"></iframe>
+    </div>
+  ` : `
+    <div class="vnc-placeholder">
+      <div class="big-icon">⬡</div>
+      <span>Start profile to open browser</span>
+    </div>
+  `;
+
+  const kaPanel = isRunning ? `
+    <div class="panel">
+      <div class="panel-header"><span class="icon">⟳</span> Keep-Alive (Anti-Disconnect)</div>
+      <div class="keepalive-panel">
+        <div class="keepalive-row">
+          <span class="keepalive-label">Interval (secs):</span>
+          <input class="interval-input" id="ka-interval" type="number" value="90" min="30" max="600"/>
+          <button class="btn btn-sm ${ka ? 'btn-danger' : 'btn-warn'}" onclick="toggleKA('${id}')">
+            ${ka ? '■ Stop Keep-Alive' : '▸ Start Keep-Alive'}
+          </button>
+          <span class="ka-status ${ka ? 'ka-on' : 'ka-off'}">${ka ? '● ON' : '○ OFF'}</span>
+          <button class="btn btn-sm btn-ghost" onclick="manualClick('${id}')">⊕ click now</button>
+        </div>
+      </div>
+    </div>` : '';
+
+  document.getElementById('right-panel').innerHTML = `
+    <div class="panel">
+      <div class="panel-header"><span class="icon">◫</span> ${esc(profile.name)}</div>
+      <div class="session-detail">
+        <div class="detail-header">
+          <div>
+            <div class="detail-title">${esc(profile.name)}</div>
+            <div class="detail-email">${esc(profile.email || '—')}</div>
+          </div>
+          <div class="detail-actions">
+            ${isRunning
+              ? `<button class="btn btn-danger btn-sm" onclick="stopProfile('${id}')">■ Stop</button>`
+              : `<button class="btn btn-success btn-sm" onclick="startProfile('${id}')">▸ Launch</button>`}
+            <button class="btn btn-ghost btn-sm" onclick="deleteProfile('${id}')">✕ Delete</button>
+          </div>
+        </div>
+        ${infoGrid}
+        ${vncPanel}
+      </div>
+    </div>
+    ${kaPanel}
+  `;
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+async function createProfile() {
+  const name  = document.getElementById('new-name').value.trim();
+  const email = document.getElementById('new-email').value.trim();
+  const notes = document.getElementById('new-notes').value.trim();
+  if (!name) { toast('Enter a profile name', 'error'); return; }
+
+  const res = await fetch(`${API}/api/profiles`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, email, notes})
+  });
+  if (res.ok) {
+    const p = await res.json();
+    toast(`Profile "${name}" created`, 'success');
+    document.getElementById('new-name').value = '';
+    document.getElementById('new-email').value = '';
+    document.getElementById('new-notes').value = '';
+    await refresh();
+    selectProfile(p.id);
+  } else {
+    toast('Failed to create profile', 'error');
+  }
+}
+
+async function startProfile(id) {
+  toast('Launching browser...', 'info');
+  const res = await fetch(`${API}/api/profiles/${id}/start`, {method:'POST'});
+  const data = await res.json();
+  if (data.error) { toast(data.error, 'error'); return; }
+  toast('Browser launched!', 'success');
+  await refresh();
+}
+
+async function stopProfile(id) {
+  await fetch(`${API}/api/profiles/${id}/stop`, {method:'POST'});
+  toast('Session stopped', 'info');
+  await refresh();
+}
+
+async function deleteProfile(id) {
+  if (!confirm('Delete this profile and all its data?')) return;
+  await fetch(`${API}/api/profiles/${id}`, {method:'DELETE'});
+  toast('Profile deleted', 'info');
+  selectedId = null;
+  document.getElementById('right-panel').innerHTML = `<div class="panel"><div class="vnc-placeholder"><div class="big-icon">⬡</div><span>Select a profile to manage</span></div></div>`;
+  await refresh();
+}
+
+async function toggleKA(id) {
+  const sess = sessions[id];
+  const ka = sess?.anti_disconnect;
+  const interval = parseInt(document.getElementById('ka-interval')?.value || 90);
+  const action = ka ? 'stop' : 'start';
+  const res = await fetch(`${API}/api/profiles/${id}/keepalive`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action, interval})
+  });
+  const data = await res.json();
+  toast(`Keep-alive ${data.status}`, 'success');
+  await refresh();
+}
+
+async function manualClick(id) {
+  const res = await fetch(`${API}/api/profiles/${id}/click`, {method:'POST'});
+  const d = await res.json();
+  toast(d.error || `Mouse click sent → [${d.moved_to?.[0]}, ${d.moved_to?.[1]}]`, d.error ? 'error' : 'info');
+}
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+let toastTimer = {};
+function toast(msg, type='info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+init();
+</script>
+</body>
+</html>
