@@ -33,7 +33,7 @@
     "onAutoForward": "silent"
   },
 
-  "postCreateCommand": "bash setup.sh",
+  "postCreateCommand": "bash setup.sh 2>&1 | tee logs/setup.log",
   "postStartCommand": "bash start.sh",
 
   "customizations": {
