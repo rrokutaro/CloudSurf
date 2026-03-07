@@ -87,20 +87,54 @@ def free_slot():
 
 
 def _autoforward_port(port):
-    """Make the NoVNC port publicly accessible in Codespaces via gh CLI."""
+    """
+    Ensure NoVNC port is publicly reachable in Codespaces.
+    Strategy 1: REST API with GITHUB_TOKEN (always available, no login needed).
+    Strategy 2: gh CLI fallback.
+    """
+    import urllib.request, urllib.error
+
+    time.sleep(2)  # let websockify bind first
+
+    cs_name  = os.environ.get("CODESPACE_NAME")
+    gh_token = os.environ.get("GITHUB_TOKEN")
+
+    if not cs_name:
+        return  # not in Codespaces
+
+    # Strategy 1: REST API — GITHUB_TOKEN is auto-injected by Codespaces
+    if gh_token:
+        try:
+            url     = f"https://api.github.com/user/codespaces/{cs_name}/ports/{port}/visibility"
+            payload = json.dumps({"visibility": "public"}).encode()
+            req     = urllib.request.Request(
+                url, data=payload, method="PATCH",
+                headers={
+                    "Authorization": f"Bearer {gh_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Content-Type": "application/json",
+                }
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                log.info(f"Port {port} set public via REST API (HTTP {r.status})")
+            return
+        except Exception as e:
+            log.warning(f"REST API port forward failed for {port}: {e}")
+
+    # Strategy 2: gh CLI
     try:
-        cs_name = os.environ.get("CODESPACE_NAME")
-        if not cs_name:
-            return  # Not in Codespaces, nothing to do
-        time.sleep(2)  # Let websockify bind first
-        # Make port visible (public = accessible via forwarded URL without login)
-        subprocess.run(
-            ["gh", "codespace", "ports", "visibility", f"{port}:public", "--codespace", cs_name],
-            capture_output=True, timeout=10
+        r = subprocess.run(
+            ["gh", "codespace", "ports", "visibility",
+             f"{port}:public", "--codespace", cs_name],
+            capture_output=True, timeout=15
         )
-        log.info(f"Port {port} forwarded as public in Codespace {cs_name}")
+        if r.returncode == 0:
+            log.info(f"Port {port} set public via gh CLI")
+        else:
+            log.warning(f"gh CLI failed for {port}: {r.stderr.decode()[:200]}")
     except Exception as e:
-        log.warning(f"Auto-forward port {port} failed: {e}")
+        log.warning(f"gh CLI port forward failed for {port}: {e}")
 
 def start_profile(pid):
     if pid in sessions:
@@ -121,7 +155,13 @@ def start_profile(pid):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     vnc = subprocess.Popen(
         ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
-         "-nopw", "-forever", "-shared", "-quiet"],
+         "-nopw", "-forever", "-shared", "-quiet",
+         "-wait", "5",        # poll every 5ms (~200fps cap vs default 50ms)
+         "-defer", "5",       # coalesce updates for 5ms (fewer redundant frames)
+         "-speeds", "lan",    # fast-connection encodings
+         "-nocursorshape",    # real cursor, less flicker
+         "-noxdamage",        # XDamage is unreliable in Xvfb; polling is better
+         ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
     ws_cmd = WEBSOCKIFY_CMD.split() + ["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
@@ -243,6 +283,37 @@ def add_headers(r):
     r.headers["X-Frame-Options"] = "ALLOWALL"
     r.headers["Access-Control-Allow-Origin"] = "*"
     return r
+
+
+@app.route("/manifest.json")
+def manifest():
+    return app.response_class(
+        response=json.dumps({
+            "name": "CloudSurf",
+            "short_name": "CloudSurf",
+            "description": "Persistent cloud browser profiles",
+            "start_url": "/",
+            "display": "standalone",
+            "background_color": "#0a0a0a",
+            "theme_color": "#0a0a0a",
+            "orientation": "any",
+            "icons": [
+                {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+            ]
+        }),
+        mimetype="application/manifest+json"
+    )
+
+@app.route("/icon.svg")
+def icon_svg():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\'
+        '<rect width="512" height="512" rx="112" fill="#0a0a0a"/>\'
+        '<text x="256" y="340" font-family="-apple-system,Helvetica Neue,sans-serif" \'
+        'font-size="260" font-weight="700" fill="white" \'
+        'text-anchor="middle" letter-spacing="-8">C</text></svg>'
+    )
+    return app.response_class(response=svg, mimetype="image/svg+xml")
 
 @app.route("/")
 def index():
