@@ -384,25 +384,45 @@ def api_sendtext(pid):
 
 @app.route("/api/profiles/<pid>/download", methods=["GET"])
 def api_download(pid):
-    import zipfile, io, tempfile
+    import zipfile, io
     pdir = PROFILES_DIR / pid
     if not pdir.exists():
         return jsonify({"error": "profile not found"}), 404
-    # Zip the entire profile directory (chrome data + meta.json)
+
+    # Directories to skip — large caches that serve no purpose in a backup
+    SKIP_DIRS = {
+        "Cache", "Code Cache", "GPUCache", "DawnCache",
+        "ShaderCache", "GrShaderCache", "DawnWebGPUCache",
+        "WidevineCdm", "CrashPad", "Crashpad",
+    }
+    # File extensions to skip
+    SKIP_EXTS = {".log", ".lock", ".tmp"}
+
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in pdir.rglob("*"):
-            # Skip lock files and large cache dirs that won't restore usefully
-            rel = f.relative_to(pdir)
-            parts = rel.parts
-            if any(p in ("Cache", "Code Cache", "GPUCache", "DawnCache",
-                         "ShaderCache", "GrShaderCache") for p in parts):
+    skipped = 0
+    added = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for item in pdir.rglob("*"):
+            if not item.is_file():
                 continue
-            if f.is_file():
-                try:
-                    zf.write(f, rel)
-                except Exception:
-                    pass  # skip locked files
+            rel = item.relative_to(pdir)
+            parts = rel.parts
+            # Skip if any path component is a cache dir
+            if any(part in SKIP_DIRS for part in parts):
+                skipped += 1
+                continue
+            # Skip by extension
+            if item.suffix.lower() in SKIP_EXTS:
+                skipped += 1
+                continue
+            try:
+                zf.write(item, rel)
+                added += 1
+            except Exception as e:
+                log.warning(f"zip skip {rel}: {e}")
+                skipped += 1
+
+    log.info(f"Download {pid}: {added} files added, {skipped} skipped")
     buf.seek(0)
     safe_name = pid.replace("/", "_")
     from flask import send_file
