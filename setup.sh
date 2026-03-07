@@ -28,27 +28,17 @@ else
 fi
 
 echo -e "${YELLOW}[1/6] Updating package lists...${NC}"
-sudo $PKG update -y -q
+# Ignore unsigned repo warnings (e.g. yarn) — not needed for CloudSurf
+sudo $PKG update -y -q 2>&1 | grep -v "^W:\|^E: The repository.*yarnpkg\|couldn't be verified" || true
 
 echo -e "${YELLOW}[2/6] Installing Xvfb + VNC + NoVNC...${NC}"
-sudo $PKG install -y -q \
-    xvfb \
-    x11vnc \
-    novnc \
-    websockify \
-    x11-utils \
-    xdotool \
-    wmctrl \
-    openbox \
-    xterm \
-    net-tools \
-    curl \
-    wget \
-    unzip \
-    python3 \
-    python3-pip \
-    jq \
-    procps
+# Install packages one group at a time for clearer error reporting
+sudo $PKG install -y -q xvfb x11vnc x11-utils xdotool wmctrl openbox xterm net-tools curl wget unzip python3 python3-pip jq procps git
+
+# novnc package name changed in Ubuntu 22+; try both
+sudo $PKG install -y -q novnc websockify 2>/dev/null || \
+sudo $PKG install -y -q novnc python3-websockify 2>/dev/null || \
+echo -e "${YELLOW}  novnc not in apt — will clone from GitHub in step 5${NC}"
 
 echo -e "${YELLOW}[3/6] Installing Google Chrome...${NC}"
 if ! command -v google-chrome &> /dev/null && ! command -v chromium-browser &> /dev/null; then
@@ -76,19 +66,39 @@ echo -e "${YELLOW}[4/6] Installing Python deps...${NC}"
 pip3 install flask flask-cors watchdog --quiet
 
 echo -e "${YELLOW}[5/6] Checking NoVNC...${NC}"
-# Find novnc path
+# Find novnc path — Ubuntu Noble puts it in different places
 NOVNC_PATH=""
-for p in /usr/share/novnc /usr/local/share/novnc /opt/novnc; do
-    if [ -d "$p" ]; then NOVNC_PATH="$p"; break; fi
+for p in /usr/share/novnc /usr/local/share/novnc /opt/novnc /usr/share/noVNC; do
+    if [ -d "$p" ] && [ -f "$p/vnc.html" -o -f "$p/index.html" ]; then
+        NOVNC_PATH="$p"; break
+    fi
 done
+
 if [ -z "$NOVNC_PATH" ]; then
-    echo "NoVNC not found in standard paths, cloning..."
-    git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc
-    git clone --depth 1 https://github.com/novnc/websockify.git /opt/websockify
+    echo "  NoVNC not found in standard paths, cloning from GitHub..."
+    sudo git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc 2>/dev/null || git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc
     NOVNC_PATH="/opt/novnc"
+    # Also ensure websockify is available
+    if ! command -v websockify &>/dev/null; then
+        pip3 install websockify --quiet
+    fi
 fi
+
+# Create vnc.html symlink if needed (some versions use index.html)
+if [ ! -f "$NOVNC_PATH/vnc.html" ] && [ -f "$NOVNC_PATH/index.html" ]; then
+    ln -sf "$NOVNC_PATH/index.html" "$NOVNC_PATH/vnc.html"
+fi
+
 echo "NOVNC_PATH=$NOVNC_PATH" >> /tmp/cloudsurf_chrome.env
-echo -e "${GREEN}NoVNC at: $NOVNC_PATH${NC}"
+echo -e "${GREEN}  NoVNC at: $NOVNC_PATH${NC}"
+
+# Detect websockify binary (might be python3 -m websockify on Noble)
+if command -v websockify &>/dev/null; then
+    echo "WEBSOCKIFY_CMD=websockify" >> /tmp/cloudsurf_chrome.env
+else
+    echo "WEBSOCKIFY_CMD=python3 -m websockify" >> /tmp/cloudsurf_chrome.env
+    echo -e "${YELLOW}  websockify will run via python3 -m${NC}"
+fi
 
 echo -e "${YELLOW}[6/6] Creating profile & log directories...${NC}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
