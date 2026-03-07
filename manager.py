@@ -253,12 +253,23 @@ def stop_anti_disconnect(profile_id: str):
 
 
 # ── Flask App ──────────────────────────────────────────────────────────────────
-app = Flask(__name__, static_folder=str(BASE_DIR / "ui"))
+UI_DIR = BASE_DIR / "ui"
+app = Flask(__name__, static_folder=str(UI_DIR), static_url_path="/static")
 CORS(app)
 
 @app.route("/")
 def index():
-    return send_from_directory(BASE_DIR / "ui", "index.html")
+    index_file = UI_DIR / "index.html"
+    if not index_file.exists():
+        return (
+            "<pre>404 - index.html not found. "
+            "Check that the ui/ folder exists next to manager.py</pre>"
+        ), 404
+    return send_from_directory(str(UI_DIR), "index.html")
+
+@app.route("/<path:filename>")
+def serve_static(filename):
+    return send_from_directory(str(UI_DIR), filename)
 
 @app.route("/api/profiles", methods=["GET"])
 def list_profiles():
