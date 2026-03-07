@@ -229,7 +229,7 @@ function renderDetail(id){
     <div class="ka-body">
       <div class="ka-row">
         <span class="ka-lbl">Every</span>
-        <input class="ka-int" id="ka-int-${id}" type="number" value="${interval}" min="30" max="600" onchange="kaState['${id}']=parseInt(this.value)"/>
+        <input class="ka-int" id="ka-int-${id}" type="number" value="${interval}" min="5" max="600" onchange="kaIntervalChanged('${id}',this.value)"/>
         <span class="ka-lbl">s</span>
         <button class="btn btn-sm ${ka?'btn-r':'btn-w'}" onclick="doToggleKA('${id}')">${ka?'■ Stop':'▸ Start'}</button>
         <span class="ka-st ${ka?'ka-on':'ka-off'}">${ka?'● ON':'○ OFF'}</span>
@@ -302,6 +302,18 @@ async function doDelete(id){
   await refresh();
 }
 
+
+async function kaIntervalChanged(id,val){
+  const intv=Math.max(5,parseInt(val)||90);
+  kaState[id]=intv;
+  // If already running, restart immediately with new interval
+  const sess=sessions[id];
+  if(sess&&sess.anti_disconnect){
+    await fetch('/api/profiles/'+id+'/keepalive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'start',interval:intv})});
+    toast('Interval → '+intv+'s','s');
+    await refresh();
+  }
+}
 async function doToggleKA(id){
   const ka=sessions[id]?.ka_active;
   const inputEl=document.getElementById(`ka-int-${id}`);
