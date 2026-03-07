@@ -1,50 +1,64 @@
 #!/bin/bash
 # ============================================================
 # CloudSurf - Start Script
+# Self-healing: runs setup automatically if deps are missing
 # ============================================================
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+mkdir -p logs
 
-# Check dependencies
-if ! command -v Xvfb &>/dev/null; then
-    echo -e "${RED}Dependencies missing. Run: ./setup.sh first${NC}"
-    exit 1
+# ── Auto-setup if dependencies are missing ───────────────────────────────────
+NEEDS_SETUP=0
+command -v Xvfb       &>/dev/null || NEEDS_SETUP=1
+command -v x11vnc     &>/dev/null || NEEDS_SETUP=1
+command -v google-chrome &>/dev/null || command -v chromium-browser &>/dev/null || command -v chromium &>/dev/null || NEEDS_SETUP=1
+python3 -c "import flask" 2>/dev/null || NEEDS_SETUP=1
+
+if [ "$NEEDS_SETUP" = "1" ]; then
+    echo -e "${YELLOW}Dependencies missing — running setup first...${NC}"
+    bash "$SCRIPT_DIR/setup.sh" 2>&1 | tee logs/setup.log
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Setup failed. Check logs/setup.log${NC}"
+        exit 1
+    fi
 fi
 
-# Kill any previous manager instance
+# ── Kill any previous manager instance ───────────────────────────────────────
 pkill -f "manager.py" 2>/dev/null || true
 sleep 0.5
 
 echo -e "${CYAN}Starting CloudSurf...${NC}"
-echo ""
 
-# Start the manager
-nohup python3 "$SCRIPT_DIR/manager.py" > "$SCRIPT_DIR/logs/manager.log" 2>&1 &
+# ── Launch manager in background ─────────────────────────────────────────────
+nohup python3 "$SCRIPT_DIR/manager.py" >> "$SCRIPT_DIR/logs/manager.log" 2>&1 &
 MANAGER_PID=$!
 echo $MANAGER_PID > /tmp/cloudsurf.pid
 
-sleep 1.5
+# ── Wait for Flask to bind ────────────────────────────────────────────────────
+echo -ne "  Waiting for manager"
+for i in $(seq 1 20); do
+    sleep 0.5
+    if curl -sf http://localhost:7860/api/status >/dev/null 2>&1; then
+        echo -e " ${GREEN}✓${NC}"
+        break
+    fi
+    echo -n "."
+done
 
-# Wait a bit longer for Flask to bind
-sleep 2.5
-
+# ── Status ────────────────────────────────────────────────────────────────────
 if kill -0 $MANAGER_PID 2>/dev/null; then
-    echo -e "${GREEN}✓ CloudSurf Manager running (PID: $MANAGER_PID)${NC}"
     echo ""
     echo -e "  ${CYAN}┌─────────────────────────────────────────────┐${NC}"
-    echo -e "  ${CYAN}│${NC}  ${GREEN}UI:${NC}     http://localhost:7860              ${CYAN}│${NC}"
-    echo -e "  ${CYAN}│${NC}  ${GREEN}API:${NC}    http://localhost:7860/api           ${CYAN}│${NC}"
-    echo -e "  ${CYAN}│${NC}                                             ${CYAN}│${NC}"
-    echo -e "  ${CYAN}│${NC}  On Codespaces: Forward port ${YELLOW}7860${NC}            ${CYAN}│${NC}"
-    echo -e "  ${CYAN}│${NC}  Also forward ${YELLOW}6080-6099${NC} for NoVNC panels    ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}  ${GREEN}CloudSurf is running${NC}                      ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}  UI:   http://localhost:7860               ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}  Logs: tail -f logs/manager.log            ${CYAN}│${NC}"
     echo -e "  ${CYAN}└─────────────────────────────────────────────┘${NC}"
-    echo ""
-    echo -e "  ${YELLOW}Logs:${NC} tail -f logs/manager.log"
     echo ""
 else
     echo -e "${RED}✗ Manager failed to start. Check logs/manager.log${NC}"
+    tail -20 logs/manager.log
     exit 1
 fi
