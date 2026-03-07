@@ -323,6 +323,28 @@
 <script>
 const API = '';  // same origin
 
+// Build correct NoVNC URL for Codespaces, Gitpod, or localhost
+function buildNoVNCUrl(novnc_port) {
+  const host = window.location.hostname;
+  
+  // GitHub Codespaces: subdomain per port
+  // Pattern: NAME-PORT.app.github.dev
+  const csMatch = host.match(/^(.+?)-(\d+)(\.app\.github\.dev)$/);
+  if (csMatch) {
+    const baseName = csMatch[1];  // everything before the current port
+    return `https://${baseName}-${novnc_port}.app.github.dev/vnc.html?autoconnect=true&resize=scale&quality=6`;
+  }
+  
+  // Gitpod: replace port in subdomain
+  const gpMatch = host.match(/^(\d+)-(.+\.gitpod\.io)$/);
+  if (gpMatch) {
+    return `https://${novnc_port}-${gpMatch[2]}/vnc.html?autoconnect=true&resize=scale&quality=6`;
+  }
+  
+  // Local / fallback
+  return `http://localhost:${novnc_port}/vnc.html?autoconnect=true&resize=scale&quality=6`;
+}
+
 // ── State ──────────────────────────────────────────────────────────────────────
 let profiles = [];
 let sessions = {};
@@ -413,9 +435,9 @@ function renderDetail(id) {
     <div class="vnc-container">
       <div class="vnc-header">
         <span>🖥 Remote Browser — ${esc(profile.name)}</span>
-        <a href="${sess.novnc_url}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;">⊕ open full tab</a>
+        <a href="${buildNoVNCUrl(sess.novnc_port)}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;">⊕ open full tab</a>
       </div>
-      <iframe class="vnc-frame" src="${sess.novnc_url}" allow="fullscreen"></iframe>
+      <iframe class="vnc-frame" src="${buildNoVNCUrl(sess.novnc_port)}" allow="fullscreen"></iframe>
     </div>
   ` : `
     <div class="vnc-placeholder">
