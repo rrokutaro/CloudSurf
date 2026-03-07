@@ -382,6 +382,37 @@ def api_sendtext(pid):
     if r.returncode != 0: return jsonify({"error": r.stderr.strip()}), 500
     return jsonify({"status": "ok", "chars": len(text)})
 
+@app.route("/api/profiles/<pid>/download", methods=["GET"])
+def api_download(pid):
+    import zipfile, io, tempfile
+    pdir = PROFILES_DIR / pid
+    if not pdir.exists():
+        return jsonify({"error": "profile not found"}), 404
+    # Zip the entire profile directory (chrome data + meta.json)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in pdir.rglob("*"):
+            # Skip lock files and large cache dirs that won't restore usefully
+            rel = f.relative_to(pdir)
+            parts = rel.parts
+            if any(p in ("Cache", "Code Cache", "GPUCache", "DawnCache",
+                         "ShaderCache", "GrShaderCache") for p in parts):
+                continue
+            if f.is_file():
+                try:
+                    zf.write(f, rel)
+                except Exception:
+                    pass  # skip locked files
+    buf.seek(0)
+    safe_name = pid.replace("/", "_")
+    from flask import send_file
+    return send_file(
+        buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"{safe_name}.zip"
+    )
+
 @app.route("/api/sessions", methods=["GET"])
 def api_sessions():
     return jsonify({pid: {**s["info"], "ka_active": _ka_active.get(pid, False)}
