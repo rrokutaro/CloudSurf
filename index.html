@@ -466,7 +466,7 @@ function renderList(){
 function selectProfile(id){selected=id;renderList();renderDetail(id);}
 
 function buildVncUrl(port){
-  var host=window.location.hostname,params='autoconnect=true&resize=scale&quality=9&compression=0&shared=true&view_only=false';
+  var host=window.location.hostname,params='autoconnect=true&resize=scale&quality=0&compression=0&shared=true&view_only=false';
   var cs=host.match(/^(.+?)-(\d+)(\.app\.github\.dev)$/);
   if(cs) return 'https://'+cs[1]+'-'+port+cs[3]+'/vnc.html?'+params;
   var gp=host.match(/^(\d+)-(.+\.gitpod\.io)$/);
