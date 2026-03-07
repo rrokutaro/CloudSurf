@@ -85,6 +85,23 @@ def free_slot():
         if i not in used: return i
     raise RuntimeError("All 20 slots in use")
 
+
+def _autoforward_port(port):
+    """Make the NoVNC port publicly accessible in Codespaces via gh CLI."""
+    try:
+        cs_name = os.environ.get("CODESPACE_NAME")
+        if not cs_name:
+            return  # Not in Codespaces, nothing to do
+        time.sleep(2)  # Let websockify bind first
+        # Make port visible (public = accessible via forwarded URL without login)
+        subprocess.run(
+            ["gh", "codespace", "ports", "visibility", f"{port}:public", "--codespace", cs_name],
+            capture_output=True, timeout=10
+        )
+        log.info(f"Port {port} forwarded as public in Codespace {cs_name}")
+    except Exception as e:
+        log.warning(f"Auto-forward port {port} failed: {e}")
+
 def start_profile(pid):
     if pid in sessions:
         return {"status": "already_running", **sessions[pid]["info"]}
@@ -122,6 +139,8 @@ def start_profile(pid):
     meta = json.loads(mf.read_text()) if mf.exists() else {"id": pid, "name": pid, "created_at": datetime.now().isoformat()}
     meta["last_started"] = datetime.now().isoformat()
     save_meta(pid, meta)
+    # Auto-forward port in Codespaces/Gitpod if gh CLI available
+    threading.Thread(target=_autoforward_port, args=(novnc_port,), daemon=True).start()
     return {"status": "started", **info}
 
 def stop_profile(pid):
@@ -303,10 +322,33 @@ def api_sessions():
     return jsonify({pid: {**s["info"], "ka_active": _ka_active.get(pid, False)}
                     for pid, s in sessions.items()})
 
+_server_location = {"city": "—", "region": "—", "country": "—"}
+
+def _fetch_server_location():
+    global _server_location
+    try:
+        import urllib.request as ur
+        with ur.urlopen("https://ipapi.co/json/", timeout=6) as r:
+            d = json.loads(r.read())
+        _server_location = {"city": d.get("city") or "—", "region": d.get("region_code") or "—", "country": d.get("country_name") or "—"}
+        log.info(f"Server location: {_server_location}")
+    except Exception as e:
+        log.warning(f"Location fetch 1 failed: {e}")
+        try:
+            import urllib.request as ur
+            with ur.urlopen("http://ip-api.com/json/?fields=city,regionName,country", timeout=6) as r:
+                d = json.loads(r.read())
+            _server_location = {"city": d.get("city") or "—", "region": d.get("regionName") or "—", "country": d.get("country") or "—"}
+        except Exception as e2:
+            log.warning(f"Location fetch 2 failed: {e2}")
+
+threading.Thread(target=_fetch_server_location, daemon=True).start()
+
 @app.route("/api/status", methods=["GET"])
 def api_status():
     return jsonify({"running": len(sessions), "chrome_bin": CHROME_BIN,
-                    "novnc_path": NOVNC_PATH, "time": datetime.now().isoformat()})
+                    "novnc_path": NOVNC_PATH, "time": datetime.now().isoformat(),
+                    "location": _server_location})
 
 def _shutdown(sig, frame):
     log.info("Shutting down...")
