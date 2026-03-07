@@ -87,12 +87,12 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 .p-tag{font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:4px;flex-shrink:0;letter-spacing:.05em;}
 .p-dl{
   width:22px;height:22px;border-radius:5px;flex-shrink:0;
-  background:transparent;border:1px solid var(--border2);
+  background:var(--bg3);border:1px solid var(--border2);
   color:var(--muted);font-size:11px;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
   transition:all .12s;margin-left:2px;
 }
-.p-dl:hover{background:var(--bg3);color:var(--text);border-color:var(--text);}
+.p-dl:hover{background:var(--bg4);color:var(--text);border-color:var(--border2);}
 .p-dl:active{transform:scale(.92);}
 .tag-live{background:rgba(52,199,89,.1);color:var(--green);border:1px solid rgba(52,199,89,.22);}
 .tag-idle{background:var(--bg3);color:var(--muted);border:1px solid var(--border2);}
