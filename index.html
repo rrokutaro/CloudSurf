@@ -477,7 +477,7 @@ function buildVncUrl(port){
 function renderDetail(id){
   var p=profiles.find(function(x){return x.id===id;});
   if(!p) return;
-  var sess=sessions[id],on=!!sess,ka=on&&sess.ka_active,intv=kaState[id]||90;
+  var sess=sessions[id],on=!!sess,ka=on&&sess.ka_active,intv=kaState[id]||10;
   var h='<div class="detail">';
 
   h+='<div class="d-header"><div>';
@@ -580,7 +580,7 @@ async function doDelete(id){
 }
 
 async function kaIntervalChanged(id,val){
-  var intv=Math.max(5,parseInt(val)||90);
+  var intv=Math.max(5,parseInt(val)||10);
   kaState[id]=intv;
   var sess=sessions[id];
   if(sess&&sess.ka_active){
@@ -592,7 +592,7 @@ async function kaIntervalChanged(id,val){
 async function doToggleKA(id){
   var sess=sessions[id],ka=sess&&sess.ka_active;
   var inp=document.getElementById('kn-'+id);
-  var intv=parseInt(inp?inp.value:(kaState[id]||90));
+  var intv=parseInt(inp?inp.value:(kaState[id]||10));
   kaState[id]=intv;
   var action=ka?'stop':'start';
   var res=await fetch('/api/profiles/'+id+'/keepalive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action,interval:intv})});
