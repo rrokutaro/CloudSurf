@@ -344,6 +344,30 @@ def api_sessions():
         }
     return jsonify(result)
 
+@app.route("/api/profiles/<pid>/sendtext", methods=["POST"])
+def api_sendtext(pid):
+    if pid not in sessions:
+        return jsonify({"error": "profile not running"}), 400
+    data = request.json or {}
+    text = data.get("text", "")
+    if not text:
+        return jsonify({"error": "no text"}), 400
+
+    sess = sessions[pid]
+    display = sess["info"]["display"]
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+
+    # xdotool type handles unicode, spaces, special chars better than key
+    # --clearmodifiers resets shift/caps state first
+    result = subprocess.run(
+        ["xdotool", "type", "--clearmodifiers", "--delay", "30", "--", text],
+        env=env, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return jsonify({"error": result.stderr.strip() or "xdotool failed"}), 500
+    return jsonify({"status": "ok", "chars": len(text)})
+
 @app.route("/api/status", methods=["GET"])
 def api_status():
     return jsonify({
