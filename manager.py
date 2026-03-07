@@ -198,16 +198,22 @@ def keepalive_click(pid):
 def ka_worker(pid, interval):
     log.info(f"KA started: {pid} every {interval}s")
     tick = 0
-    while _ka_active.get(pid):
-        time.sleep(interval)
-        if not _ka_active.get(pid) or pid not in sessions: break
+    # Fire immediately on start, then wait interval between each tick
+    while _ka_active.get(pid) and pid in sessions:
         tick += 1
         keepalive_click(pid)
-        if tick % 3 == 0:
+        log.info(f"[ka] {pid} tick={tick} interval={interval}s")
+        # Chrome watchdog every 5 ticks
+        if tick % 5 == 0:
             sess = sessions.get(pid)
             if sess and sess.get("chrome") and sess["chrome"].poll() is not None:
                 log.warning(f"[watchdog] {pid} Chrome died - restarting")
                 restart_chrome(pid)
+        # Sleep in small chunks so stopping is responsive
+        slept = 0
+        while slept < interval and _ka_active.get(pid):
+            time.sleep(min(1, interval - slept))
+            slept += 1
 
 app = Flask(__name__)
 CORS(app)
@@ -263,12 +269,19 @@ def api_restart_chrome(pid): return jsonify(restart_chrome(pid))
 def api_keepalive(pid):
     d        = request.json or {}
     action   = d.get("action", "start")
-    interval = max(30, int(d.get("interval", 90)))
+    interval = max(5, int(d.get("interval", 90)))  # allow down to 5s for testing
+
+    # Always stop existing worker first (prevents duplicate threads)
+    _ka_active[pid] = False
+    time.sleep(0.2)  # let old thread notice the flag
+
     if action == "start":
         _ka_active[pid] = True
         threading.Thread(target=ka_worker, args=(pid, interval), daemon=True).start()
+        log.info(f"KA started for {pid} every {interval}s")
         return jsonify({"status": "started", "interval": interval})
-    _ka_active[pid] = False
+
+    log.info(f"KA stopped for {pid}")
     return jsonify({"status": "stopped"})
 
 @app.route("/api/profiles/<pid>/click", methods=["POST"])
