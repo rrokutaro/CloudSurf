@@ -156,11 +156,13 @@ def start_profile(pid):
     vnc = subprocess.Popen(
         ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
          "-nopw", "-forever", "-shared", "-quiet",
-         "-wait", "5",        # poll every 5ms (~200fps cap vs default 50ms)
-         "-defer", "5",       # coalesce updates for 5ms (fewer redundant frames)
-         "-speeds", "lan",    # fast-connection encodings
-         "-nocursorshape",    # real cursor, less flicker
-         "-noxdamage",        # XDamage is unreliable in Xvfb; polling is better
+         "-wait", "1",        # poll every 1ms — maximum responsiveness
+         "-defer", "1",       # flush updates almost immediately
+         "-speeds", "modem",  # forces raw/copyrect encodings — fastest, no compression
+         "-nocursorshape",    # send real cursor position
+         "-noxdamage",        # skip XDamage; direct polling is faster in Xvfb
+         "-noscr",            # disable scrolling copy optimisation (causes lag)
+         "-nowireframe",      # skip wireframe move/resize (cleaner)
          ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
