@@ -170,7 +170,7 @@ def start_profile(profile_id: str) -> dict:
         "display":     f":{display}",
         "vnc_port":    vnc_port,
         "novnc_port":  novnc_port,
-        "novnc_url":   f"/novnc/{novnc_port}/vnc.html?autoconnect=true&resize=scale&quality=6",
+        "novnc_url":   f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&resize=scale&quality=6",
         "started_at":  datetime.now().isoformat(),
     }
 
@@ -362,6 +362,14 @@ def shutdown(sig, frame):
 
 signal.signal(signal.SIGINT, shutdown)
 signal.signal(signal.SIGTERM, shutdown)
+
+@app.after_request
+def add_headers(response):
+    # Allow iframe embedding from Codespaces / any origin
+    response.headers.pop("X-Frame-Options", None)
+    response.headers["X-Frame-Options"] = "ALLOWALL"
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
 
 if __name__ == "__main__":
     log.info(f"CloudSurf manager starting on port {API_PORT}")
