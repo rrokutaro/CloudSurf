@@ -259,7 +259,14 @@ def keep_alive_click(profile_id: str):
     subprocess.run(["xdotool", "mousemove", str(x + random.randint(-5,5)), str(y + random.randint(-5,5))],
                    env=env, capture_output=True)
 
-    return {"status": "ok", "zone": f"edge ({x},{y})"}
+    import random as _r
+    action = _r.choice(["scroll", "scroll", "scroll", "move"])  # mostly scroll, rarely just move
+    return {
+        "status": "ok",
+        "x": x, "y": y,
+        "zone": f"edge-{SAFE_ZONES.index(zone)}",
+        "action": action
+    }
 
 
 def check_screen_health(profile_id: str) -> dict:
@@ -342,6 +349,9 @@ def anti_disconnect_worker(profile_id: str, interval_secs: int):
         # Keep-alive click every interval
         result = keep_alive_click(profile_id)
         log.info(f"[keep-alive] {profile_id}: {result}")
+        # Store last action so UI can display it
+        if profile_id in sessions:
+            sessions[profile_id]["info"]["last_action"] = result
 
         # Health check every 3rd tick — detect black screen, dead Chrome
         if tick % 3 == 0:
