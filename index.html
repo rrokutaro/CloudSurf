@@ -178,6 +178,62 @@
   .stat-val.green { color:var(--accent2); }
   .stat-lab { font-size:11px; color:var(--muted); letter-spacing:0.05em; text-transform:uppercase; }
 
+  /* ── Keep-alive map ── */
+  .ka-map-wrap { margin-top:10px; }
+  .ka-map-label { font-size:10px; font-family:var(--font-mono); color:var(--muted); margin-bottom:5px; letter-spacing:0.05em; }
+  .ka-map {
+    position:relative; width:100%; aspect-ratio:1280/900; max-height:160px;
+    background:#050a0f;
+    border:1px solid var(--border); border-radius:4px; overflow:hidden;
+  }
+  /* Faint grid lines to suggest browser chrome */
+  .ka-map::before {
+    content:''; position:absolute; inset:0;
+    background:
+      linear-gradient(rgba(0,212,255,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.04) 1px, transparent 1px);
+    background-size: 25% 25%;
+  }
+  /* Address bar area hint */
+  .ka-map::after {
+    content:''; position:absolute; top:0; left:0; right:0; height:7%;
+    background:rgba(0,212,255,0.05); border-bottom:1px solid rgba(0,212,255,0.08);
+  }
+  /* Safe zone shading */
+  .ka-map-grid {
+    position:absolute; inset:0;
+    background:
+      /* corners */
+      radial-gradient(circle 20px at 3% 4%, rgba(0,255,136,0.08) 0%, transparent 100%),
+      radial-gradient(circle 20px at 97% 4%, rgba(0,255,136,0.08) 0%, transparent 100%),
+      radial-gradient(circle 20px at 3% 96%, rgba(0,255,136,0.08) 0%, transparent 100%),
+      radial-gradient(circle 20px at 97% 96%, rgba(0,255,136,0.08) 0%, transparent 100%),
+      /* edges */
+      radial-gradient(circle 15px at 3% 50%, rgba(0,255,136,0.05) 0%, transparent 100%),
+      radial-gradient(circle 15px at 97% 50%, rgba(0,255,136,0.05) 0%, transparent 100%);
+  }
+  .ka-dot {
+    position:absolute; width:16px; height:16px; border-radius:50%;
+    background:rgba(0,255,136,0.9); box-shadow:0 0 10px rgba(0,255,136,0.8), 0 0 20px rgba(0,255,136,0.4);
+    transform:translate(-50%, -50%);
+    transition:opacity 1.5s ease;
+    pointer-events:none; z-index:10;
+  }
+  .ka-dot::after {
+    content:''; position:absolute; inset:-4px; border-radius:50%;
+    border:1px solid rgba(0,255,136,0.5);
+    animation:ripple 1s ease-out forwards;
+  }
+  @keyframes ripple {
+    0%   { transform:scale(1); opacity:1; }
+    100% { transform:scale(2.5); opacity:0; }
+  }
+  .ka-dot-fade { opacity:0; }
+  .ka-log {
+    margin-top:8px; font-family:var(--font-mono); font-size:11px;
+    color:var(--muted); line-height:1.7; max-height:80px; overflow-y:auto;
+  }
+
   /* ── Browser card ── */
   .browser-card {
     background:var(--surface); border:1px solid var(--border);
@@ -365,6 +421,8 @@ function buildNoVNCUrl(novnc_port) {
 let profiles = [];
 let sessions = {};
 let selectedId = null;
+let kaState = {};   // profile_id -> interval value
+let kaLog = {};     // profile_id -> last activity HTML
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 async function init() {
@@ -386,6 +444,10 @@ async function refresh() {
     renderProfiles();
     updateStats();
     if (selectedId) renderDetail(selectedId);
+    // Sync ka logs from server-reported last_action
+    for (const [pid, sess] of Object.entries(sessions)) {
+      if (sess.last_action) appendKaLog(pid, sess.last_action);
+    }
     // Poll chrome health for running sessions
     for (const [pid, sess] of Object.entries(sessions)) {
       const statusEl = document.getElementById(`chrome-status-${pid}`);
@@ -499,18 +561,26 @@ function renderDetail(id) {
   `;
 
   const kaPanel = isRunning ? `
-    <div class="panel">
-      <div class="panel-header"><span class="icon">⟳</span> Keep-Alive (Anti-Disconnect)</div>
-      <div class="keepalive-panel">
-        <div class="keepalive-row">
-          <span class="keepalive-label">Interval (secs):</span>
-          <input class="interval-input" id="ka-interval" type="number" value="90" min="30" max="600"/>
-          <button class="btn btn-sm ${ka ? 'btn-danger' : 'btn-warn'}" onclick="toggleKA('${id}')">
-            ${ka ? '■ Stop Keep-Alive' : '▸ Start Keep-Alive'}
+    <div class='panel'>
+      <div class='panel-header'><span class='icon'>⟳</span> Keep-Alive (Anti-Disconnect)</div>
+      <div class='keepalive-panel'>
+        <div class='keepalive-row'>
+          <span class='keepalive-label'>Every</span>
+          <input class='interval-input' id='ka-interval-${id}' type='number' value='${kaState[id] || 90}' min='30' max='600' onchange="kaState['${id}']=this.value"/>
+          <span class='keepalive-label'>s</span>
+          <button class='btn btn-sm ${ka ? \'btn-danger\' : \'btn-warn\'}' onclick='toggleKA(\'${id}\')'>
+            ${ka ? '■ Stop' : '▸ Start Keep-Alive'}
           </button>
-          <span class="ka-status ${ka ? 'ka-on' : 'ka-off'}">${ka ? '● ON' : '○ OFF'}</span>
-          <button class="btn btn-sm btn-ghost" onclick="manualClick('${id}')">⊕ click now</button>
+          <span class='ka-status ${ka ? \'ka-on\' : \'ka-off\'}'>${ka ? '● ON' : '○ OFF'}</span>
+          <button class='btn btn-sm btn-ghost' onclick='manualClick(\'${id}\')'>▸ trigger now</button>
         </div>
+        <div class='ka-map-wrap'>
+          <div class='ka-map-label'>1280×900 display — dots show keep-alive activity</div>
+          <div class='ka-map' id='ka-map-${id}'>
+            <div class='ka-map-grid'></div>
+          </div>
+        </div>
+        <div id='ka-log-${id}' class='ka-log'>${kaLog[id] || '<span style="color:var(--muted)">No activity yet</span>'}</div>
       </div>
     </div>` : '';
 
@@ -589,21 +659,58 @@ async function deleteProfile(id) {
 async function toggleKA(id) {
   const sess = sessions[id];
   const ka = sess?.anti_disconnect;
-  const interval = parseInt(document.getElementById('ka-interval')?.value || 90);
+  const inputEl = document.getElementById(`ka-interval-${id}`);
+  const interval = parseInt(inputEl?.value || kaState[id] || 90);
+  kaState[id] = interval;  // persist across re-renders
   const action = ka ? 'stop' : 'start';
   const res = await fetch(`${API}/api/profiles/${id}/keepalive`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({action, interval})
   });
   const data = await res.json();
-  toast(`Keep-alive ${data.status}`, 'success');
+  toast(`Keep-alive ${data.status} (every ${interval}s)`, 'success');
   await refresh();
 }
 
 async function manualClick(id) {
   const res = await fetch(`${API}/api/profiles/${id}/click`, {method:'POST'});
   const d = await res.json();
-  toast(d.error || `Mouse click sent → [${d.moved_to?.[0]}, ${d.moved_to?.[1]}]`, d.error ? 'error' : 'info');
+  if (d.error) { toast(d.error, 'error'); return; }
+  showActivityDot(id, d);
+  appendKaLog(id, d);
+}
+
+function showActivityDot(id, d) {
+  // Show a pulsing dot on the mini-map visualization
+  const map = document.getElementById(`ka-map-${id}`);
+  if (!map) return;
+  const dot = document.createElement('div');
+  dot.className = 'ka-dot';
+  // Scale coords from 1280x900 display to map size (256x180)
+  const mapW = map.offsetWidth || 256;
+  const mapH = map.offsetHeight || 144;
+  const scaleX = mapW / 1280;
+  const scaleY = mapH / 900;
+  const x = Math.round((d.x || 0) * scaleX);
+  const y = Math.round((d.y || 0) * scaleY);
+  dot.style.left = x + 'px';
+  dot.style.top  = y + 'px';
+  dot.title = `(${d.x}, ${d.y}) ${d.action || ''}`;
+  map.appendChild(dot);
+  // Fade out after 5s
+  setTimeout(() => dot.classList.add('ka-dot-fade'), 4000);
+  setTimeout(() => dot.remove(), 5500);
+}
+
+function appendKaLog(id, d) {
+  const now = new Date().toLocaleTimeString();
+  const entry = `<span class="log-line info">[${now}] ${d.action || 'scroll'} @ (${d.x ?? '?'}, ${d.y ?? '?'}) — ${d.zone || ''}</span>`;
+  kaLog[id] = entry + (kaLog[id] ? '<br>' + kaLog[id] : '');
+  // Keep last 8 entries
+  const entries = kaLog[id].split('<br>');
+  if (entries.length > 8) kaLog[id] = entries.slice(0, 8).join('<br>');
+  const logEl = document.getElementById(`ka-log-${id}`);
+  if (logEl) logEl.innerHTML = kaLog[id];
 }
 
 // ── VNC helpers ──────────────────────────────────────────────────────────────
