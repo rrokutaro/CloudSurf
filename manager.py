@@ -306,13 +306,7 @@ def manifest():
 
 @app.route("/icon.svg")
 def icon_svg():
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\'
-        '<rect width="512" height="512" rx="112" fill="#0a0a0a"/>\'
-        '<text x="256" y="340" font-family="-apple-system,Helvetica Neue,sans-serif" \'
-        'font-size="260" font-weight="700" fill="white" \'
-        'text-anchor="middle" letter-spacing="-8">C</text></svg>'
-    )
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0a0a0a"/><text x="256" y="340" font-family="-apple-system,Helvetica Neue,sans-serif" font-size="260" font-weight="700" fill="white" text-anchor="middle" letter-spacing="-8">C</text></svg>"""
     return app.response_class(response=svg, mimetype="image/svg+xml")
 
 @app.route("/")
