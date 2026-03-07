@@ -4,8 +4,6 @@ Run multiple isolated Chrome browser profiles in the cloud — accessible from a
 
 ![Banner](banner.png)
 
----
-
 ## Use Cases
 
 **Free compute & AI tools**
