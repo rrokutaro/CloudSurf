@@ -22,11 +22,14 @@ echo -e "${CYAN}Starting CloudSurf...${NC}"
 echo ""
 
 # Start the manager
-nohup python3 manager.py > logs/manager.log 2>&1 &
+nohup python3 "$SCRIPT_DIR/manager.py" > "$SCRIPT_DIR/logs/manager.log" 2>&1 &
 MANAGER_PID=$!
 echo $MANAGER_PID > /tmp/cloudsurf.pid
 
 sleep 1.5
+
+# Wait a bit longer for Flask to bind
+sleep 2.5
 
 if kill -0 $MANAGER_PID 2>/dev/null; then
     echo -e "${GREEN}✓ CloudSurf Manager running (PID: $MANAGER_PID)${NC}"
