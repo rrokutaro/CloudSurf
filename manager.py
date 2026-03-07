@@ -253,7 +253,7 @@ def stop_anti_disconnect(profile_id: str):
 
 
 # ── Flask App ──────────────────────────────────────────────────────────────────
-UI_DIR = BASE_DIR / "ui"
+UI_DIR = BASE_DIR  # index.html lives next to manager.py
 app = Flask(__name__, static_folder=str(UI_DIR), static_url_path="/static")
 CORS(app)
 
