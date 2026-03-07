@@ -1,563 +1,308 @@
 #!/usr/bin/env python3
-"""
-CloudSurf - Profile Manager Backend
-Flask API that manages Chrome browser profiles, Xvfb displays, VNC + NoVNC sessions
-"""
+"""CloudSurf - Profile Manager Backend"""
 
-import os
-import sys
-import json
-import time
-import signal
-import shutil
-import subprocess
-import threading
-import logging
+import os, sys, json, time, signal, shutil, subprocess, threading, logging, random
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-BASE_DIR     = Path(__file__).parent
+BASE_DIR     = Path(__file__).resolve().parent
 PROFILES_DIR = BASE_DIR / "profiles"
 LOGS_DIR     = BASE_DIR / "logs"
-STATE_FILE   = BASE_DIR / "state.json"
 PROFILES_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
 
-API_PORT      = 7860
-NOVNC_BASE    = 6080   # novnc for profile 0 = 6080, profile 1 = 6081, etc.
-VNC_BASE      = 5900   # x11vnc base port
-DISPLAY_BASE  = 10     # :10, :11, :12 ...
+API_PORT     = 7860
+NOVNC_BASE   = 6080
+VNC_BASE     = 5900
+DISPLAY_BASE = 10
 
-# Detect chrome binary
-CHROME_ENV = Path("/tmp/cloudsurf_chrome.env")
 CHROME_BIN     = "google-chrome"
 NOVNC_PATH     = "/usr/share/novnc"
 WEBSOCKIFY_CMD = "websockify"
-if CHROME_ENV.exists():
-    for line in CHROME_ENV.read_text().splitlines():
-        if line.startswith("CHROME_BIN="):
-            CHROME_BIN = line.split("=",1)[1]
-        if line.startswith("NOVNC_PATH="):
-            NOVNC_PATH = line.split("=",1)[1]
-        if line.startswith("WEBSOCKIFY_CMD="):
-            WEBSOCKIFY_CMD = line.split("=",1)[1]
 
-# ── Logging ────────────────────────────────────────────────────────────────────
+cfg = Path("/tmp/cloudsurf_chrome.env")
+if cfg.exists():
+    for line in cfg.read_text().splitlines():
+        k, _, v = line.partition("=")
+        if k == "CHROME_BIN":     CHROME_BIN     = v
+        if k == "NOVNC_PATH":     NOVNC_PATH     = v
+        if k == "WEBSOCKIFY_CMD": WEBSOCKIFY_CMD = v
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOGS_DIR / "manager.log")
-    ]
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler(LOGS_DIR / "manager.log")]
 )
 log = logging.getLogger("cloudsurf")
 
-# ── State ──────────────────────────────────────────────────────────────────────
-# In-memory session state (processes etc.)
-sessions: dict = {}   # profile_id -> {xvfb_proc, vnc_proc, chrome_proc, novnc_proc, display, ports}
+sessions: dict = {}
+_ka_active: dict = {}
 
-def load_profiles():
-    """Load profile metadata from disk."""
-    profiles = []
-    if not PROFILES_DIR.exists():
-        return profiles
-    for p in sorted(PROFILES_DIR.iterdir()):
-        meta_file = p / "meta.json"
-        if meta_file.exists():
-            try:
-                meta = json.loads(meta_file.read_text())
-                meta["active"] = p.name in sessions
-                profiles.append(meta)
-            except Exception as e:
-                log.error(f"Error reading {meta_file}: {e}")
-    return profiles
-
-def save_profile_meta(profile_id: str, data: dict):
-    profile_dir = PROFILES_DIR / profile_id
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    meta_file = profile_dir / "meta.json"
-    meta_file.write_text(json.dumps(data, indent=2))
-
-def get_free_slot():
-    """Find the next free display/port slot."""
-    used = {s["slot"] for s in sessions.values() if "slot" in s}
-    for i in range(0, 20):
-        if i not in used:
-            return i
-    raise RuntimeError("All slots in use (max 20)")
+CHROME_FLAGS = [
+    "--no-sandbox", "--disable-setuid-sandbox",
+    "--disable-gpu", "--disable-software-rasterizer",
+    "--disable-gpu-sandbox", "--disable-dev-shm-usage",
+    "--disable-accelerated-2d-canvas",
+    "--no-first-run", "--no-default-browser-check",
+    "--disable-infobars", "--disable-session-crashed-bubble",
+    "--disable-features=TranslateUI,VizDisplayCompositor",
+    "--disable-background-networking",
+    "--start-maximized", "--window-size=1280,900",
+]
 
 def kill_proc(proc):
     if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=3)
-        except Exception:
+        try: proc.terminate(); proc.wait(timeout=3)
+        except:
             try: proc.kill()
-            except Exception: pass
+            except: pass
 
-# ── Profile lifecycle ──────────────────────────────────────────────────────────
+def load_profiles():
+    out = []
+    for p in sorted(PROFILES_DIR.iterdir()):
+        mf = p / "meta.json"
+        if mf.exists():
+            try:
+                m = json.loads(mf.read_text())
+                m["active"] = p.name in sessions
+                if p.name in sessions:
+                    m["session"] = sessions[p.name]["info"]
+                out.append(m)
+            except Exception as e:
+                log.error(f"meta read error {mf}: {e}")
+    return out
 
-def start_profile(profile_id: str) -> dict:
-    if profile_id in sessions:
-        return {"status": "already_running", **sessions[profile_id]["info"]}
+def save_meta(pid, data):
+    d = PROFILES_DIR / pid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(json.dumps(data, indent=2))
 
-    slot     = get_free_slot()
-    display  = DISPLAY_BASE + slot
-    vnc_port = VNC_BASE  + slot
+def free_slot():
+    used = {s["slot"] for s in sessions.values()}
+    for i in range(20):
+        if i not in used: return i
+    raise RuntimeError("All 20 slots in use")
+
+def start_profile(pid):
+    if pid in sessions:
+        return {"status": "already_running", **sessions[pid]["info"]}
+    slot       = free_slot()
+    display    = DISPLAY_BASE + slot
+    vnc_port   = VNC_BASE  + slot
     novnc_port = NOVNC_BASE + slot
+    pdir       = PROFILES_DIR / pid
+    pdir.mkdir(parents=True, exist_ok=True)
+    env        = {**os.environ, "DISPLAY": f":{display}"}
 
-    profile_dir = PROFILES_DIR / profile_id
-    profile_dir.mkdir(parents=True, exist_ok=True)
-
-    log.info(f"Starting profile {profile_id} | display=:{display} vnc={vnc_port} novnc={novnc_port}")
-
-    # 1. Start Xvfb
-    xvfb_proc = subprocess.Popen(
-        ["Xvfb", f":{display}", "-screen", "0", "1280x900x24", "-ac", "+extension", "RANDR"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    log.info(f"Starting {pid}: :{display} novnc={novnc_port}")
+    xvfb = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", "1280x900x24", "-ac"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1.2)
-
-    # 2. Start window manager (openbox)
-    env = os.environ.copy()
-    env["DISPLAY"] = f":{display}"
-    wm_proc = subprocess.Popen(
-        ["openbox", "--startup", "openbox --reconfigure"],
-        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-
-    # 3. Start x11vnc
-    vnc_proc = subprocess.Popen(
+    wm = subprocess.Popen(["openbox"], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    vnc = subprocess.Popen(
         ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
-         "-nopw", "-forever", "-shared", "-quiet", "-bg"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    time.sleep(1)
-
-    # 4. Start NoVNC websockify
-    ws_cmd = WEBSOCKIFY_CMD.split()  # handle "python3 -m websockify"
-    novnc_cmd = ws_cmd + ["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
-    novnc_proc = subprocess.Popen(
-        novnc_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+         "-nopw", "-forever", "-shared", "-quiet"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
+    ws_cmd = WEBSOCKIFY_CMD.split() + ["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
+    novnc = subprocess.Popen(ws_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    chrome = subprocess.Popen(
+        [CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS + ["about:blank"],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # 5. Start Chrome
-    chrome_flags = [
-        CHROME_BIN,
-        f"--user-data-dir={profile_dir}/chrome",
-        # Sandbox / security (required in containerized envs)
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        # GPU / rendering — prevents SIGILL and black screens in VMs
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--disable-gpu-sandbox",
-        "--disable-dev-shm-usage",   # /dev/shm too small in containers
-        "--disable-accelerated-2d-canvas",
-        # UI noise
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-infobars",
-        "--disable-session-crashed-bubble",
-        "--disable-features=TranslateUI,VizDisplayCompositor",
-        "--disable-sync-preferences",
-        "--disable-background-networking",
-        "--start-maximized",
-        "--window-size=1280,900",
-        "about:blank"
-    ]
-    chrome_proc = subprocess.Popen(
-        chrome_flags, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-
-    info = {
-        "profile_id":  profile_id,
-        "display":     f":{display}",
-        "vnc_port":    vnc_port,
-        "novnc_port":  novnc_port,
-        "novnc_url":   f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&resize=scale&quality=6",
-        "started_at":  datetime.now().isoformat(),
-    }
-
-    sessions[profile_id] = {
-        "slot":       slot,
-        "xvfb":       xvfb_proc,
-        "wm":         wm_proc,
-        "vnc":        vnc_proc,
-        "novnc":      novnc_proc,
-        "chrome":     chrome_proc,
-        "info":       info,
-    }
-
-    # Update meta
-    meta_file = profile_dir / "meta.json"
-    if meta_file.exists():
-        meta = json.loads(meta_file.read_text())
-    else:
-        meta = {"id": profile_id, "name": profile_id, "created_at": datetime.now().isoformat()}
+    info = {"profile_id": pid, "display": f":{display}", "vnc_port": vnc_port,
+            "novnc_port": novnc_port, "started_at": datetime.now().isoformat(), "last_action": None}
+    sessions[pid] = {"slot": slot, "xvfb": xvfb, "wm": wm, "vnc": vnc,
+                     "novnc": novnc, "chrome": chrome, "info": info}
+    mf = pdir / "meta.json"
+    meta = json.loads(mf.read_text()) if mf.exists() else {"id": pid, "name": pid, "created_at": datetime.now().isoformat()}
     meta["last_started"] = datetime.now().isoformat()
-    save_profile_meta(profile_id, meta)
-
-    log.info(f"Profile {profile_id} running. NoVNC → port {novnc_port}")
+    save_meta(pid, meta)
     return {"status": "started", **info}
 
-
-def stop_profile(profile_id: str) -> dict:
-    if profile_id not in sessions:
-        return {"status": "not_running"}
-
-    sess = sessions.pop(profile_id)
-    log.info(f"Stopping profile {profile_id}...")
-
-    for key in ["chrome", "novnc", "vnc", "wm", "xvfb"]:
-        kill_proc(sess.get(key))
-
-    return {"status": "stopped", "profile_id": profile_id}
-
-
-# Safe click zones — edges/corners away from content area center
-# Format: (x_range, y_range) — avoids links in output cells
-SAFE_ZONES = [
-    (20, 60,   20, 60),    # top-left corner
-    (1220, 1260, 20, 60),  # top-right corner
-    (20, 60,   840, 880),  # bottom-left corner
-    (1220, 1260, 840, 880),# bottom-right corner
-    (20, 60,   430, 470),  # left edge mid
-    (1220, 1260, 430, 470),# right edge mid
-]
-
-def keep_alive_click(profile_id: str):
-    """Mouse wiggle in safe edge zones to keep Colab session alive.
-    Deliberately avoids center of screen where output links appear."""
-    if profile_id not in sessions:
-        return {"error": "not running"}
-    sess = sessions[profile_id]
-    display = sess["info"]["display"]
-    env = os.environ.copy()
-    env["DISPLAY"] = display
-
-    import random
-    zone = random.choice(SAFE_ZONES)
-    x = random.randint(zone[0], zone[1])
-    y = random.randint(zone[2], zone[3])
-
-    # Move mouse to safe zone
-    subprocess.run(["xdotool", "mousemove", str(x), str(y)], env=env, capture_output=True)
-    time.sleep(0.4)
-    # Scroll slightly (doesn't trigger links, resets idle timer)
-    subprocess.run(["xdotool", "click", "--clearmodifiers", "4"], env=env, capture_output=True)  # scroll up
-    time.sleep(0.2)
-    subprocess.run(["xdotool", "click", "--clearmodifiers", "5"], env=env, capture_output=True)  # scroll down
-    time.sleep(0.2)
-    # Move away from zone after
-    subprocess.run(["xdotool", "mousemove", str(x + random.randint(-5,5)), str(y + random.randint(-5,5))],
-                   env=env, capture_output=True)
-
-    import random as _r
-    action = _r.choice(["scroll", "scroll", "scroll", "move"])  # mostly scroll, rarely just move
-    return {
-        "status": "ok",
-        "x": x, "y": y,
-        "zone": f"edge-{SAFE_ZONES.index(zone)}",
-        "action": action
-    }
-
-
-def check_screen_health(profile_id: str) -> dict:
-    """Take a screenshot and check if it's mostly black (dead display)."""
-    if profile_id not in sessions:
-        return {"error": "not running"}
-    sess = sessions[profile_id]
-    display = sess["info"]["display"]
-    env = os.environ.copy()
-    env["DISPLAY"] = display
-
-    snap_path = f"/tmp/cloudsurf_snap_{profile_id}.png"
-    result = subprocess.run(
-        ["import", "-window", "root", "-resize", "64x64", snap_path],
-        env=env, capture_output=True
-    )
-    if result.returncode != 0:
-        # imagemagick not available, skip check
-        return {"healthy": True, "note": "imagemagick not available"}
-
-    # Check if image is mostly black using Python
-    try:
-        with open(snap_path, "rb") as f:
-            data = f.read()
-        # Rough heuristic: if file is tiny it's probably all one color
-        if len(data) < 500:
-            return {"healthy": False, "reason": "black_screen"}
-        return {"healthy": True}
-    except Exception as e:
-        return {"healthy": True, "note": str(e)}
-
-
-def restart_chrome(profile_id: str) -> dict:
-    """Kill and relaunch Chrome for a profile without touching Xvfb/VNC."""
-    if profile_id not in sessions:
-        return {"error": "not running"}
-    sess = sessions[profile_id]
-    profile_dir = PROFILES_DIR / profile_id
-    display = sess["info"]["display"]
-
-    log.info(f"Restarting Chrome for {profile_id}...")
-    kill_proc(sess.get("chrome"))
-    time.sleep(1.5)
-
-    env = os.environ.copy()
-    env["DISPLAY"] = display
-    chrome_flags = [
-        CHROME_BIN,
-        f"--user-data-dir={profile_dir}/chrome",
-        "--no-sandbox", "--disable-setuid-sandbox",
-        "--disable-gpu", "--disable-software-rasterizer",
-        "--disable-gpu-sandbox", "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--no-first-run", "--no-default-browser-check",
-        "--disable-infobars", "--disable-session-crashed-bubble",
-        "--disable-features=TranslateUI,VizDisplayCompositor",
-        "--start-maximized", "--window-size=1280,900",
-    ]
-    chrome_proc = subprocess.Popen(
-        chrome_flags, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    sess["chrome"] = chrome_proc
-    log.info(f"Chrome restarted for {profile_id} (PID {chrome_proc.pid})")
-    return {"status": "restarted", "pid": chrome_proc.pid}
-
-
-# ── Anti-disconnect thread ─────────────────────────────────────────────────────
-_anti_disconnect_active = {}
-
-def anti_disconnect_worker(profile_id: str, interval_secs: int):
-    log.info(f"Anti-disconnect started for {profile_id} every {interval_secs}s")
-    tick = 0
-    while _anti_disconnect_active.get(profile_id):
-        time.sleep(interval_secs)
-        if profile_id not in sessions or not _anti_disconnect_active.get(profile_id):
-            break
-        tick += 1
-
-        # Keep-alive click every interval
-        result = keep_alive_click(profile_id)
-        log.info(f"[keep-alive] {profile_id}: {result}")
-        # Store last action so UI can display it
-        if profile_id in sessions:
-            sessions[profile_id]["info"]["last_action"] = result
-
-        # Health check every 3rd tick — detect black screen, dead Chrome
-        if tick % 3 == 0:
-            health = check_screen_health(profile_id)
-            if not health.get("healthy", True):
-                log.warning(f"[watchdog] {profile_id} unhealthy: {health.get('reason')} — restarting Chrome")
-                restart_chrome(profile_id)
-            else:
-                # Also check if chrome process is still alive
-                sess = sessions.get(profile_id)
-                if sess and sess.get("chrome") and sess["chrome"].poll() is not None:
-                    log.warning(f"[watchdog] {profile_id} Chrome died (exit {sess['chrome'].poll()}) — restarting")
-                    restart_chrome(profile_id)
-
-def start_anti_disconnect(profile_id: str, interval: int = 90):
-    _anti_disconnect_active[profile_id] = True
-    t = threading.Thread(target=anti_disconnect_worker, args=(profile_id, interval), daemon=True)
-    t.start()
-    return {"status": "started", "interval_secs": interval}
-
-def stop_anti_disconnect(profile_id: str):
-    _anti_disconnect_active[profile_id] = False
+def stop_profile(pid):
+    if pid not in sessions: return {"status": "not_running"}
+    _ka_active[pid] = False
+    sess = sessions.pop(pid)
+    for k in ["chrome", "novnc", "vnc", "wm", "xvfb"]:
+        kill_proc(sess.get(k))
     return {"status": "stopped"}
 
+def restart_chrome(pid):
+    if pid not in sessions: return {"error": "not running"}
+    sess = sessions[pid]; pdir = PROFILES_DIR / pid
+    kill_proc(sess.get("chrome")); time.sleep(1.5)
+    env = {**os.environ, "DISPLAY": sess["info"]["display"]}
+    chrome = subprocess.Popen(
+        [CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS,
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sess["chrome"] = chrome
+    return {"status": "restarted", "pid": chrome.pid}
 
-# ── Flask App ──────────────────────────────────────────────────────────────────
-UI_DIR = BASE_DIR  # index.html lives next to manager.py
-app = Flask(__name__, static_folder=str(UI_DIR), static_url_path="/static")
+def keepalive_click(pid):
+    """Right-click + Escape + scroll — safest keep-alive strategy.
+    Right-click opens context menu anywhere without triggering links/buttons.
+    Escape closes it immediately. Scroll provides additional activity signal.
+    """
+    if pid not in sessions: return {"error": "not running"}
+    sess = sessions[pid]
+    env  = {**os.environ, "DISPLAY": sess["info"]["display"]}
+
+    def run(cmd):
+        subprocess.run(cmd, env=env, capture_output=True)
+
+    # Random position — anywhere is safe because right-click+escape harms nothing
+    x = random.randint(80, 1200)
+    y = random.randint(80, 820)
+
+    # 1. Move mouse
+    run(["xdotool", "mousemove", "--sync", str(x), str(y)])
+    time.sleep(random.uniform(0.15, 0.35))
+
+    # 2. Right-click → context menu appears
+    run(["xdotool", "click", "--clearmodifiers", "3"])
+    time.sleep(random.uniform(0.12, 0.25))
+
+    # 3. Escape → dismiss context menu, no item selected
+    run(["xdotool", "key", "--clearmodifiers", "Escape"])
+    time.sleep(random.uniform(0.1, 0.2))
+
+    # 4. Scroll up N ticks then back down (resets idle timer, looks human)
+    ticks = random.randint(2, 5)
+    for _ in range(ticks):
+        run(["xdotool", "click", "--clearmodifiers", "4"])  # wheel up
+        time.sleep(0.05)
+    time.sleep(random.uniform(0.1, 0.2))
+    for _ in range(ticks):
+        run(["xdotool", "click", "--clearmodifiers", "5"])  # wheel down
+        time.sleep(0.05)
+
+    # 5. Small random drift
+    run(["xdotool", "mousemove", "--sync",
+         str(x + random.randint(-6, 6)),
+         str(y + random.randint(-6, 6))])
+
+    result = {
+        "status": "ok", "x": x, "y": y,
+        "action": "rclick+esc+scroll",
+        "zone": "free",
+        "ts": datetime.now().strftime("%H:%M:%S")
+    }
+    sess["info"]["last_action"] = result
+    return result
+
+def ka_worker(pid, interval):
+    log.info(f"KA started: {pid} every {interval}s")
+    tick = 0
+    while _ka_active.get(pid):
+        time.sleep(interval)
+        if not _ka_active.get(pid) or pid not in sessions: break
+        tick += 1
+        keepalive_click(pid)
+        if tick % 3 == 0:
+            sess = sessions.get(pid)
+            if sess and sess.get("chrome") and sess["chrome"].poll() is not None:
+                log.warning(f"[watchdog] {pid} Chrome died - restarting")
+                restart_chrome(pid)
+
+app = Flask(__name__)
 CORS(app)
+
+@app.after_request
+def add_headers(r):
+    r.headers.pop("X-Frame-Options", None)
+    r.headers["X-Frame-Options"] = "ALLOWALL"
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    return r
 
 @app.route("/")
 def index():
-    index_file = UI_DIR / "index.html"
-    if not index_file.exists():
-        return (
-            "<pre>404 - index.html not found. "
-            "Check that the ui/ folder exists next to manager.py</pre>"
-        ), 404
-    return send_from_directory(str(UI_DIR), "index.html")
-
-@app.route("/<path:filename>")
-def serve_static(filename):
-    return send_from_directory(str(UI_DIR), filename)
+    f = BASE_DIR / "index.html"
+    if not f.exists():
+        return f"<pre>index.html not found in {BASE_DIR}\nFiles: {[x.name for x in BASE_DIR.iterdir()]}</pre>", 404
+    return send_from_directory(str(BASE_DIR), "index.html")
 
 @app.route("/api/profiles", methods=["GET"])
-def list_profiles():
-    return jsonify(load_profiles())
+def api_list(): return jsonify(load_profiles())
 
 @app.route("/api/profiles", methods=["POST"])
-def create_profile():
-    data = request.json or {}
-    name = data.get("name", "").strip()
-    if not name:
-        return jsonify({"error": "name required"}), 400
-    # Generate slug ID
-    pid = name.lower().replace(" ", "_").replace("@","_at_")[:32] + "_" + str(int(time.time()))[-5:]
-    meta = {
-        "id":         pid,
-        "name":       name,
-        "email":      data.get("email", ""),
-        "notes":      data.get("notes", ""),
-        "created_at": datetime.now().isoformat(),
-        "active":     False,
-    }
-    save_profile_meta(pid, meta)
-    log.info(f"Created profile: {pid}")
+def api_create():
+    d    = request.json or {}
+    name = d.get("name", "").strip()
+    if not name: return jsonify({"error": "name required"}), 400
+    pid  = name.lower().replace(" ", "_").replace("@", "_at_")[:28] + "_" + str(int(time.time()))[-5:]
+    meta = {"id": pid, "name": name, "email": d.get("email",""),
+            "notes": d.get("notes",""), "created_at": datetime.now().isoformat()}
+    save_meta(pid, meta)
     return jsonify(meta), 201
 
 @app.route("/api/profiles/<pid>", methods=["DELETE"])
-def delete_profile(pid):
-    if pid in sessions:
-        stop_profile(pid)
-    profile_dir = PROFILES_DIR / pid
-    if profile_dir.exists():
-        shutil.rmtree(profile_dir)
+def api_delete(pid):
+    if pid in sessions: stop_profile(pid)
+    d = PROFILES_DIR / pid
+    if d.exists(): shutil.rmtree(d)
     return jsonify({"status": "deleted"})
 
 @app.route("/api/profiles/<pid>/start", methods=["POST"])
 def api_start(pid):
-    profile_dir = PROFILES_DIR / pid
-    if not profile_dir.exists():
-        return jsonify({"error": "profile not found"}), 404
-    try:
-        result = start_profile(pid)
-        return jsonify(result)
-    except Exception as e:
-        log.error(f"Error starting {pid}: {e}")
-        return jsonify({"error": str(e)}), 500
+    if not (PROFILES_DIR / pid).exists(): return jsonify({"error": "profile not found"}), 404
+    try: return jsonify(start_profile(pid))
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
 @app.route("/api/profiles/<pid>/stop", methods=["POST"])
-def api_stop(pid):
-    return jsonify(stop_profile(pid))
+def api_stop(pid): return jsonify(stop_profile(pid))
+
+@app.route("/api/profiles/<pid>/restart-chrome", methods=["POST"])
+def api_restart_chrome(pid): return jsonify(restart_chrome(pid))
 
 @app.route("/api/profiles/<pid>/keepalive", methods=["POST"])
 def api_keepalive(pid):
-    data = request.json or {}
-    action = data.get("action", "start")
-    interval = int(data.get("interval", 90))
+    d        = request.json or {}
+    action   = d.get("action", "start")
+    interval = max(30, int(d.get("interval", 90)))
     if action == "start":
-        return jsonify(start_anti_disconnect(pid, interval))
-    else:
-        return jsonify(stop_anti_disconnect(pid))
+        _ka_active[pid] = True
+        threading.Thread(target=ka_worker, args=(pid, interval), daemon=True).start()
+        return jsonify({"status": "started", "interval": interval})
+    _ka_active[pid] = False
+    return jsonify({"status": "stopped"})
 
 @app.route("/api/profiles/<pid>/click", methods=["POST"])
-def api_click(pid):
-    return jsonify(keep_alive_click(pid))
-
-@app.route("/api/sessions", methods=["GET"])
-def api_sessions():
-    result = {}
-    for pid, sess in sessions.items():
-        result[pid] = {
-            **sess["info"],
-            "anti_disconnect": _anti_disconnect_active.get(pid, False)
-        }
-    return jsonify(result)
-
-@app.route("/api/profiles/<pid>/restart-chrome", methods=["POST"])
-def api_restart_chrome(pid):
-    return jsonify(restart_chrome(pid))
-
-@app.route("/api/profiles/<pid>/health", methods=["GET"])
-def api_health(pid):
-    return jsonify(check_screen_health(pid))
+def api_click(pid): return jsonify(keepalive_click(pid))
 
 @app.route("/api/profiles/<pid>/sendtext", methods=["POST"])
 def api_sendtext(pid):
-    if pid not in sessions:
-        return jsonify({"error": "profile not running"}), 400
-    data = request.json or {}
-    text = data.get("text", "")
-    if not text:
-        return jsonify({"error": "no text"}), 400
+    if pid not in sessions: return jsonify({"error": "not running"}), 400
+    text = (request.json or {}).get("text", "")
+    if not text: return jsonify({"error": "no text"}), 400
+    env = {**os.environ, "DISPLAY": sessions[pid]["info"]["display"]}
+    r   = subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "30", "--", text],
+                         env=env, capture_output=True, text=True)
+    if r.returncode != 0: return jsonify({"error": r.stderr.strip()}), 500
+    return jsonify({"status": "ok", "chars": len(text)})
 
-    sess = sessions[pid]
-    display = sess["info"]["display"]
-    env = os.environ.copy()
-    env["DISPLAY"] = display
-
-    # 1. Release any stuck modifier keys (Caps Lock, Shift, Ctrl etc.)
-    subprocess.run(["xdotool", "keyup", "shift", "ctrl", "alt", "super"], env=env, capture_output=True)
-    # Turn off Caps Lock if it's on
-    subprocess.run(["bash", "-c",
-        f"DISPLAY={display} xset q | grep -q 'Caps Lock:   on' && DISPLAY={display} xdotool key Caps_Lock || true"
-    ], env=env, capture_output=True)
-
-    # 2. Put text in X clipboard via xclip (most reliable for paste)
-    xclip = subprocess.run(["xclip", "-selection", "clipboard"], input=text,
-        env=env, capture_output=True, text=True)
-
-    # 3. Also type it directly via xdotool (works even without focus)
-    result = subprocess.run(
-        ["xdotool", "type", "--clearmodifiers", "--delay", "20", "--", text],
-        env=env, capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        return jsonify({"error": result.stderr.strip() or "xdotool failed"}), 500
-    return jsonify({"status": "ok", "chars": len(text), "clipboard": xclip.returncode == 0})
-
-@app.route("/api/profiles/<pid>/resetkeys", methods=["POST"])
-def api_resetkeys(pid):
-    """Release all stuck modifier keys and turn off Caps Lock."""
-    if pid not in sessions:
-        return jsonify({"error": "not running"}), 400
-    sess = sessions[pid]
-    display = sess["info"]["display"]
-    env = os.environ.copy()
-    env["DISPLAY"] = display
-    # Release modifiers
-    subprocess.run(["xdotool", "keyup", "shift", "ctrl", "alt", "super", "Caps_Lock"], env=env, capture_output=True)
-    # Force caps lock off
-    subprocess.run(["bash", "-c",
-        f"DISPLAY={display} xset q | grep -q 'Caps Lock:   on' && DISPLAY={display} xdotool key Caps_Lock || true"
-    ], capture_output=True)
-    # Also clear any xdotool held keys
-    subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"], env=env, capture_output=True)
-    return jsonify({"status": "ok", "message": "modifiers reset"})
+@app.route("/api/sessions", methods=["GET"])
+def api_sessions():
+    return jsonify({pid: {**s["info"], "ka_active": _ka_active.get(pid, False)}
+                    for pid, s in sessions.items()})
 
 @app.route("/api/status", methods=["GET"])
 def api_status():
-    return jsonify({
-        "running_profiles": len(sessions),
-        "chrome_bin": CHROME_BIN,
-        "novnc_path": NOVNC_PATH,
-        "server_time": datetime.now().isoformat(),
-    })
+    return jsonify({"running": len(sessions), "chrome_bin": CHROME_BIN,
+                    "novnc_path": NOVNC_PATH, "time": datetime.now().isoformat()})
 
-# ── Graceful shutdown ──────────────────────────────────────────────────────────
-def shutdown(sig, frame):
-    log.info("Shutting down all sessions...")
-    for pid in list(sessions.keys()):
-        stop_profile(pid)
+def _shutdown(sig, frame):
+    log.info("Shutting down...")
+    for pid in list(sessions): stop_profile(pid)
     sys.exit(0)
 
-signal.signal(signal.SIGINT, shutdown)
-signal.signal(signal.SIGTERM, shutdown)
-
-@app.after_request
-def add_headers(response):
-    # Allow iframe embedding from Codespaces / any origin
-    response.headers.pop("X-Frame-Options", None)
-    response.headers["X-Frame-Options"] = "ALLOWALL"
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    return response
+signal.signal(signal.SIGINT,  _shutdown)
+signal.signal(signal.SIGTERM, _shutdown)
 
 if __name__ == "__main__":
-    log.info(f"CloudSurf manager starting on port {API_PORT}")
-    log.info(f"Chrome: {CHROME_BIN} | NoVNC: {NOVNC_PATH}")
+    log.info(f"CloudSurf :{API_PORT} | chrome={CHROME_BIN} | novnc={NOVNC_PATH}")
     app.run(host="0.0.0.0", port=API_PORT, debug=False, threaded=True)
