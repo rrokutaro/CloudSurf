@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="CloudSurf"/>
+<meta name="theme-color" content="#0a0a0a"/>
+<link rel="manifest" href="/manifest.json"/>
 <title>CloudSurf</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -24,7 +30,7 @@
   --ui:"Inter",-apple-system,BlinkMacSystemFont,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--ui);-webkit-font-smoothing:antialiased;font-feature-settings:"cv11","ss01";}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--ui);-webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-feature-settings:"cv11","ss01";}
 .app{height:100vh;overflow:hidden;}
 main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 
@@ -416,7 +422,7 @@ function renderList(){
 function selectProfile(id){selected=id;renderList();renderDetail(id);}
 
 function buildVncUrl(port){
-  var host=window.location.hostname,params='autoconnect=true&resize=scale&quality=6&shared=true';
+  var host=window.location.hostname,params='autoconnect=true&resize=scale&quality=9&compression=0&shared=true&view_only=false';
   var cs=host.match(/^(.+?)-(\d+)(\.app\.github\.dev)$/);
   if(cs) return 'https://'+cs[1]+'-'+port+cs[3]+'/vnc.html?'+params;
   var gp=host.match(/^(\d+)-(.+\.gitpod\.io)$/);
