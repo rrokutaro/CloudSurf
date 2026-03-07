@@ -6,220 +6,92 @@
 <title>CloudSurf</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  /* Import a clean, modern geometric font like the screenshots */
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-  :root {
-    --bg-dark: #09090b;
-    --card-bg: rgba(255, 255, 255, 0.04);
-    --card-border: rgba(255, 255, 255, 0.08);
-    --text-main: #ffffff;
-    --text-muted: #a1a1aa;
-    --accent-blue: #2563eb;
-    --accent-purple: #7c3aed;
-    --accent-pink: #db2777;
-    --glass-blur: blur(24px);
-  }
-
-  /* 1. Base Dark Mode & Dotted Background (from the Weather UI screenshot) */
-  body {
-    background-color: var(--bg-dark);
-    color: var(--text-main);
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    margin: 0;
-    padding: 0;
-    min-height: 100vh;
-    overflow-x: hidden;
-    position: relative;
-    background-image: radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px);
-    background-size: 20px 20px;
-  }
-
-  /* 2. Vibrant Floating Aurora Orbs (from the Audio/Fishbowl/AI UI screenshots) */
-  body::before, body::after {
-    content: '';
-    position: fixed;
-    border-radius: 50%;
-    filter: blur(120px);
-    z-index: -1;
-    opacity: 0.5;
-    animation: float 10s infinite ease-in-out alternate;
-  }
-  body::before {
-    top: -10vh;
-    left: -10vw;
-    width: 60vw;
-    height: 60vw;
-    background: radial-gradient(circle, var(--accent-blue), var(--accent-purple));
-  }
-  body::after {
-    bottom: -10vh;
-    right: -10vw;
-    width: 50vw;
-    height: 50vw;
-    background: radial-gradient(circle, var(--accent-pink), #ea580c);
-    animation-delay: -5s;
-  }
-
-  @keyframes float {
-    0% { transform: translate(0, 0) scale(1); }
-    100% { transform: translate(30px, 50px) scale(1.1); }
-  }
-
-  /* 3. Layout Wrapper */
-  .container, main {
-    max-width: 500px; /* Mobile-first sleek width */
-    margin: 0 auto;
-    padding: 32px 24px 120px 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-  }
-
-  /* 4. Glassmorphic Cards (from the Dream app / Progress Report screenshots) */
-  .card, section, article, div[class*="container"] > div {
-    background: var(--card-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
-    border: 1px solid var(--card-border);
-    border-radius: 32px;
-    padding: 28px;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
-    transition: transform 0.3s ease, background 0.3s ease;
-  }
-  .card:hover, article:hover, section:hover {
-    transform: translateY(-4px);
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  /* Typography Reset */
-  h1, h2, h3, h4 {
-    margin: 0 0 8px 0;
-    font-weight: 600;
-    letter-spacing: -0.03em;
-  }
-  h1 { 
-    font-size: 2.2rem; 
-    background: linear-gradient(to bottom right, #ffffff, #a1a1aa); 
-    -webkit-background-clip: text; 
-    -webkit-text-fill-color: transparent; 
-  }
-  p { 
-    color: var(--text-muted); 
-    line-height: 1.6; 
-    margin: 0 0 16px 0; 
-  }
-
-  /* 5. Sleek Form Inputs */
-  input, textarea {
-    width: 100%;
-    background: rgba(0, 0, 0, 0.4);
-    border: 1px solid var(--card-border);
-    border-radius: 20px;
-    padding: 16px 20px;
-    color: white;
-    font-size: 1rem;
-    box-sizing: border-box;
-    font-family: inherit;
-    outline: none;
-    transition: all 0.3s;
-    margin-bottom: 12px;
-  }
-  input:focus, textarea:focus {
-    border-color: rgba(255, 255, 255, 0.4);
-    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.05);
-  }
-
-  /* 6. Pill Buttons */
-  button, .btn {
-    background: #ffffff;
-    color: #000000;
-    border: none;
-    padding: 16px 32px;
-    border-radius: 50px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    width: 100%;
-  }
-  button:hover {
-    transform: scale(1.02);
-    box-shadow: 0 8px 25px rgba(255, 255, 255, 0.2);
-  }
-  
-  /* Outline Dark Button Variant */
-  button.dark, .btn-dark {
-    background: rgba(255, 255, 255, 0.05);
-    color: #ffffff;
-    border: 1px solid var(--card-border);
-    backdrop-filter: blur(10px);
-  }
-  button.dark:hover {
-    background: rgba(255, 255, 255, 0.15);
-  }
-
-  /* 7. Lists (from the VEVO screenshot) */
-  ul {
-    list-style: none;
-    padding: 0; margin: 0;
-    display: flex; flex-direction: column; gap: 12px;
-  }
-  li {
-    background: rgba(255, 255, 255, 0.04);
-    border-radius: 16px;
-    padding: 16px 20px;
-    border: 1px solid var(--card-border);
-  }
-
-  /* 8. Floating Bottom Navigation (from the AI App) */
-  nav, .bottom-bar {
-    position: fixed;
-    bottom: 30px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(15, 15, 20, 0.75);
-    backdrop-filter: blur(32px);
-    -webkit-backdrop-filter: blur(32px);
-    padding: 8px 16px;
-    border-radius: 50px;
-    border: 1px solid var(--card-border);
-    display: flex;
-    gap: 12px;
-    z-index: 100;
-    box-shadow: 0 20px 40px rgba(0,0,0,0.6);
-  }
-  nav a {
-    color: var(--text-muted);
-    text-decoration: none;
-    padding: 12px 24px;
-    border-radius: 50px;
-    transition: all 0.3s;
-    font-weight: 500;
-  }
-  nav a:hover, nav a.active {
-    color: white;
-    background: rgba(255, 255, 255, 0.1);
-  }
-
-  /* Responsive behavior so it scales up nicely on desktop */
-  @media (min-width: 768px) {
-    .container, main {
-      max-width: 1100px;
-      flex-direction: row;
-      flex-wrap: wrap;
-      justify-content: center;
-    }
-    .card, section, article {
-      flex: 1 1 350px;
-      max-width: 450px;
-    }
-    button { width: auto; }
-  }
+:root{--bg:#080c10;--surface:#0d1117;--card:#111820;--border:#1e2d3d;--accent:#00d4ff;--green:#00ff88;--red:#ff4466;--warn:#ffaa00;--text:#c9d1d9;--muted:#5a6a7a;--mono:'JetBrains Mono',monospace;--ui:'Space Grotesk',sans-serif;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--ui);}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:1000;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,212,255,0.012) 2px,rgba(0,212,255,0.012) 4px);}
+.app{display:grid;grid-template-rows:54px 1fr;height:100vh;}
+header{display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid var(--border);background:rgba(13,17,23,0.96);backdrop-filter:blur(8px);position:sticky;top:0;z-index:100;}
+.logo{display:flex;align-items:center;gap:9px;}
+.logo-text{font-family:var(--mono);font-weight:700;font-size:14px;color:var(--accent);letter-spacing:.08em;}
+.logo-sub{font-size:11px;color:var(--muted);font-family:var(--mono);}
+.hdr-pill{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:20px;background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.18);color:var(--accent);font-size:11px;font-family:var(--mono);}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 2s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+main{overflow-y:auto;padding:22px;display:grid;grid-template-columns:300px 1fr;gap:18px;align-content:start;}
+.stats{grid-column:1/-1;display:flex;gap:12px;}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:12px 18px;flex:1;display:flex;flex-direction:column;gap:3px;}
+.stat-val{font-size:24px;font-weight:700;font-family:var(--mono);color:var(--accent);}
+.stat-val.g{color:var(--green);}
+.stat-lab{font-size:10px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:7px;overflow:hidden;}
+.ph{padding:11px 15px;border-bottom:1px solid var(--border);font-size:11px;font-family:var(--mono);color:var(--muted);letter-spacing:.1em;text-transform:uppercase;display:flex;align-items:center;gap:7px;}
+.ph .ct{margin-left:auto;background:rgba(0,212,255,.1);padding:2px 8px;border-radius:10px;font-size:10px;color:var(--accent);}
+.form{padding:15px;display:flex;flex-direction:column;gap:11px;}
+label{display:block;font-size:10px;font-family:var(--mono);color:var(--muted);margin-bottom:4px;letter-spacing:.05em;}
+input,textarea{width:100%;padding:8px 11px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:border-color .2s;}
+input:focus,textarea:focus{border-color:var(--accent);}
+textarea{resize:vertical;min-height:52px;}
+.btn{padding:8px 14px;border:none;border-radius:5px;cursor:pointer;font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.04em;transition:all .15s;display:inline-flex;align-items:center;gap:5px;}
+.btn-p{background:var(--accent);color:#000;}.btn-p:hover{background:#33ddff;transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,212,255,.3);}
+.btn-g{background:var(--green);color:#000;}.btn-g:hover{background:#33ffaa;transform:translateY(-1px);}
+.btn-r{background:rgba(255,68,102,.15);color:var(--red);border:1px solid rgba(255,68,102,.3);}.btn-r:hover{background:rgba(255,68,102,.28);}
+.btn-gh{background:transparent;color:var(--muted);border:1px solid var(--border);}.btn-gh:hover{border-color:var(--accent);color:var(--accent);}
+.btn-w{background:rgba(255,170,0,.12);color:var(--warn);border:1px solid rgba(255,170,0,.25);}.btn-w:hover{background:rgba(255,170,0,.22);}
+.btn-sm{padding:5px 10px;font-size:11px;}
+.profile-item{padding:13px 15px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:11px;cursor:pointer;transition:background .15s;}
+.profile-item:last-child{border-bottom:none;}
+.profile-item:hover{background:rgba(0,212,255,.04);}
+.profile-item.sel{background:rgba(0,212,255,.07);}
+.pip{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:all .3s;}
+.live .pip{background:var(--green);box-shadow:0 0 6px var(--green);}
+.pname{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pemail{font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pbadge{font-size:10px;font-family:var(--mono);padding:2px 7px;border-radius:10px;flex-shrink:0;}
+.bl{background:rgba(0,255,136,.1);color:var(--green);border:1px solid rgba(0,255,136,.2);}
+.bi{background:rgba(90,106,122,.15);color:var(--muted);border:1px solid var(--border);}
+.right{display:flex;flex-direction:column;gap:15px;}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
+.info-item{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:9px 11px;}
+.info-label{font-size:10px;font-family:var(--mono);color:var(--muted);letter-spacing:.07em;text-transform:uppercase;margin-bottom:3px;}
+.info-val{font-size:13px;font-family:var(--mono);}
+.info-val.a{color:var(--accent);}.info-val.g{color:var(--green);}
+.bcard{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:14px;display:flex;flex-direction:column;gap:10px;}
+.brow{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.cstatus{font-size:11px;font-family:var(--mono);padding:5px 10px;border-radius:5px;background:rgba(0,255,136,.08);border:1px solid rgba(0,255,136,.2);color:var(--green);white-space:nowrap;}
+.cstatus.warn{background:rgba(255,170,0,.1);border-color:rgba(255,170,0,.25);color:var(--warn);}
+.paste-bar{display:none;gap:7px;align-items:center;flex-wrap:wrap;padding-top:4px;}
+.paste-bar input{flex:1;min-width:180px;}
+.ka-body{padding:14px 15px;display:flex;flex-direction:column;gap:10px;}
+.ka-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.ka-lbl{font-size:12px;font-family:var(--mono);color:var(--muted);}
+.ka-int{width:64px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;text-align:center;}
+.ka-st{font-size:11px;font-family:var(--mono);padding:3px 8px;border-radius:10px;}
+.ka-on{background:rgba(0,255,136,.1);color:var(--green);}
+.ka-off{background:rgba(90,106,122,.1);color:var(--muted);}
+.map-wrap{display:flex;flex-direction:column;gap:5px;}
+.map-lbl{font-size:10px;font-family:var(--mono);color:var(--muted);letter-spacing:.05em;}
+.ka-map{position:relative;width:100%;aspect-ratio:1280/900;max-height:150px;background:#050a0f;border:1px solid var(--border);border-radius:4px;overflow:hidden;}
+.ka-map::before{content:'';position:absolute;inset:0;background:linear-gradient(rgba(0,212,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,.035) 1px,transparent 1px);background-size:25% 25%;}
+.ka-map::after{content:'';position:absolute;top:0;left:0;right:0;height:8%;background:rgba(0,212,255,.04);border-bottom:1px solid rgba(0,212,255,.07);}
+.ka-zones{position:absolute;inset:0;background:radial-gradient(circle 18px at 3.5% 4%,rgba(0,255,136,.12) 0%,transparent 100%),radial-gradient(circle 18px at 96.5% 4%,rgba(0,255,136,.12) 0%,transparent 100%),radial-gradient(circle 18px at 3.5% 96%,rgba(0,255,136,.12) 0%,transparent 100%),radial-gradient(circle 18px at 96.5% 96%,rgba(0,255,136,.12) 0%,transparent 100%),radial-gradient(circle 14px at 3.5% 50%,rgba(0,255,136,.08) 0%,transparent 100%),radial-gradient(circle 14px at 96.5% 50%,rgba(0,255,136,.08) 0%,transparent 100%);}
+.ka-dot{position:absolute;width:14px;height:14px;border-radius:50%;background:rgba(0,255,136,.95);box-shadow:0 0 8px rgba(0,255,136,.9),0 0 18px rgba(0,255,136,.4);transform:translate(-50%,-50%);pointer-events:none;z-index:10;transition:opacity 1.5s ease;}
+.ka-dot::after{content:'';position:absolute;inset:-5px;border-radius:50%;border:1px solid rgba(0,255,136,.5);animation:ripple .9s ease-out forwards;}
+@keyframes ripple{0%{transform:scale(1);opacity:1}100%{transform:scale(2.8);opacity:0}}
+.ka-dot-fade{opacity:0;}
+.ka-log{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.7;max-height:72px;overflow-y:auto;}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:180px;gap:10px;color:var(--muted);font-family:var(--mono);font-size:12px;}
+.empty-icon{font-size:32px;opacity:.2;}
+.tip{background:rgba(255,170,0,.06);border:1px solid rgba(255,170,0,.18);border-radius:6px;padding:11px 13px;font-size:12px;font-family:var(--mono);color:var(--warn);line-height:1.65;}
+.tip strong{display:block;margin-bottom:4px;}
+#toasts{position:fixed;bottom:22px;right:22px;z-index:9999;display:flex;flex-direction:column;gap:7px;}
+.toast{padding:9px 14px;border-radius:6px;font-family:var(--mono);font-size:12px;border-left:3px solid;animation:slideIn .2s ease;max-width:300px;}
+.toast.s{background:rgba(0,255,136,.1);border-color:var(--green);color:var(--green);}
+.toast.e{background:rgba(255,68,102,.1);border-color:var(--red);color:var(--red);}
+.toast.i{background:rgba(0,212,255,.1);border-color:var(--accent);color:var(--accent);}
+@keyframes slideIn{from{transform:translateX(16px);opacity:0}to{transform:translateX(0);opacity:1}}
+::-webkit-scrollbar{width:5px;height:5px;}::-webkit-scrollbar-track{background:var(--surface);}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+@media(max-width:720px){main{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -228,7 +100,7 @@
   <div class="logo">
     <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><circle cx="13" cy="13" r="12" stroke="#00d4ff" stroke-width="1.4"/><path d="M6.5 13c0-3.59 2.91-6.5 6.5-6.5s6.5 2.91 6.5 6.5" stroke="#00d4ff" stroke-width="1.4" stroke-linecap="round"/><circle cx="13" cy="13" r="2.8" fill="#00d4ff"/><path d="M13 15.8v3.7M10.5 19.5h5" stroke="#00d4ff" stroke-width="1.4" stroke-linecap="round"/></svg>
     <span class="logo-text">CLOUDSURF</span>
-    <span class="logo-sub">// browser farm</span>
+    <span class="logo-sub"></span>
   </div>
   <div class="hdr-pill"><div class="dot"></div><span id="hdr-status">0 running</span></div>
 </header>
