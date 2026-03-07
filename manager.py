@@ -150,12 +150,23 @@ def start_profile(profile_id: str) -> dict:
     chrome_flags = [
         CHROME_BIN,
         f"--user-data-dir={profile_dir}/chrome",
+        # Sandbox / security (required in containerized envs)
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        # GPU / rendering — prevents SIGILL and black screens in VMs
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-gpu-sandbox",
+        "--disable-dev-shm-usage",   # /dev/shm too small in containers
+        "--disable-accelerated-2d-canvas",
+        # UI noise
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-infobars",
         "--disable-session-crashed-bubble",
-        "--disable-features=TranslateUI",
+        "--disable-features=TranslateUI,VizDisplayCompositor",
         "--disable-sync-preferences",
+        "--disable-background-networking",
         "--start-maximized",
         "--window-size=1280,900",
         "about:blank"
@@ -210,24 +221,110 @@ def stop_profile(profile_id: str) -> dict:
     return {"status": "stopped", "profile_id": profile_id}
 
 
+# Safe click zones — edges/corners away from content area center
+# Format: (x_range, y_range) — avoids links in output cells
+SAFE_ZONES = [
+    (20, 60,   20, 60),    # top-left corner
+    (1220, 1260, 20, 60),  # top-right corner
+    (20, 60,   840, 880),  # bottom-left corner
+    (1220, 1260, 840, 880),# bottom-right corner
+    (20, 60,   430, 470),  # left edge mid
+    (1220, 1260, 430, 470),# right edge mid
+]
+
 def keep_alive_click(profile_id: str):
-    """Send a random mouse wiggle + scroll to keep Colab session alive."""
+    """Mouse wiggle in safe edge zones to keep Colab session alive.
+    Deliberately avoids center of screen where output links appear."""
     if profile_id not in sessions:
         return {"error": "not running"}
     sess = sessions[profile_id]
     display = sess["info"]["display"]
     env = os.environ.copy()
     env["DISPLAY"] = display
-    # Random mouse move + scroll
+
     import random
-    x = random.randint(200, 1000)
-    y = random.randint(200, 700)
+    zone = random.choice(SAFE_ZONES)
+    x = random.randint(zone[0], zone[1])
+    y = random.randint(zone[2], zone[3])
+
+    # Move mouse to safe zone
     subprocess.run(["xdotool", "mousemove", str(x), str(y)], env=env, capture_output=True)
-    time.sleep(0.3)
-    subprocess.run(["xdotool", "click", "1"], env=env, capture_output=True)
+    time.sleep(0.4)
+    # Scroll slightly (doesn't trigger links, resets idle timer)
+    subprocess.run(["xdotool", "click", "--clearmodifiers", "4"], env=env, capture_output=True)  # scroll up
     time.sleep(0.2)
-    subprocess.run(["xdotool", "key", "End"], env=env, capture_output=True)
-    return {"status": "ok", "moved_to": [x, y]}
+    subprocess.run(["xdotool", "click", "--clearmodifiers", "5"], env=env, capture_output=True)  # scroll down
+    time.sleep(0.2)
+    # Move away from zone after
+    subprocess.run(["xdotool", "mousemove", str(x + random.randint(-5,5)), str(y + random.randint(-5,5))],
+                   env=env, capture_output=True)
+
+    return {"status": "ok", "zone": f"edge ({x},{y})"}
+
+
+def check_screen_health(profile_id: str) -> dict:
+    """Take a screenshot and check if it's mostly black (dead display)."""
+    if profile_id not in sessions:
+        return {"error": "not running"}
+    sess = sessions[profile_id]
+    display = sess["info"]["display"]
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+
+    snap_path = f"/tmp/cloudsurf_snap_{profile_id}.png"
+    result = subprocess.run(
+        ["import", "-window", "root", "-resize", "64x64", snap_path],
+        env=env, capture_output=True
+    )
+    if result.returncode != 0:
+        # imagemagick not available, skip check
+        return {"healthy": True, "note": "imagemagick not available"}
+
+    # Check if image is mostly black using Python
+    try:
+        with open(snap_path, "rb") as f:
+            data = f.read()
+        # Rough heuristic: if file is tiny it's probably all one color
+        if len(data) < 500:
+            return {"healthy": False, "reason": "black_screen"}
+        return {"healthy": True}
+    except Exception as e:
+        return {"healthy": True, "note": str(e)}
+
+
+def restart_chrome(profile_id: str) -> dict:
+    """Kill and relaunch Chrome for a profile without touching Xvfb/VNC."""
+    if profile_id not in sessions:
+        return {"error": "not running"}
+    sess = sessions[profile_id]
+    profile_dir = PROFILES_DIR / profile_id
+    display = sess["info"]["display"]
+
+    log.info(f"Restarting Chrome for {profile_id}...")
+    kill_proc(sess.get("chrome"))
+    time.sleep(1.5)
+
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    chrome_flags = [
+        CHROME_BIN,
+        f"--user-data-dir={profile_dir}/chrome",
+        "--no-sandbox", "--disable-setuid-sandbox",
+        "--disable-gpu", "--disable-software-rasterizer",
+        "--disable-gpu-sandbox", "--disable-dev-shm-usage",
+        "--disable-accelerated-2d-canvas",
+        "--no-first-run", "--no-default-browser-check",
+        "--disable-infobars", "--disable-session-crashed-bubble",
+        "--disable-features=TranslateUI,VizDisplayCompositor",
+        "--start-maximized", "--window-size=1280,900",
+    ]
+    chrome_proc = subprocess.Popen(
+        chrome_flags, env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    sess["chrome"] = chrome_proc
+    log.info(f"Chrome restarted for {profile_id} (PID {chrome_proc.pid})")
+    return {"status": "restarted", "pid": chrome_proc.pid}
 
 
 # ── Anti-disconnect thread ─────────────────────────────────────────────────────
@@ -235,11 +332,29 @@ _anti_disconnect_active = {}
 
 def anti_disconnect_worker(profile_id: str, interval_secs: int):
     log.info(f"Anti-disconnect started for {profile_id} every {interval_secs}s")
+    tick = 0
     while _anti_disconnect_active.get(profile_id):
         time.sleep(interval_secs)
-        if profile_id in sessions and _anti_disconnect_active.get(profile_id):
-            result = keep_alive_click(profile_id)
-            log.info(f"[keep-alive] {profile_id}: {result}")
+        if profile_id not in sessions or not _anti_disconnect_active.get(profile_id):
+            break
+        tick += 1
+
+        # Keep-alive click every interval
+        result = keep_alive_click(profile_id)
+        log.info(f"[keep-alive] {profile_id}: {result}")
+
+        # Health check every 3rd tick — detect black screen, dead Chrome
+        if tick % 3 == 0:
+            health = check_screen_health(profile_id)
+            if not health.get("healthy", True):
+                log.warning(f"[watchdog] {profile_id} unhealthy: {health.get('reason')} — restarting Chrome")
+                restart_chrome(profile_id)
+            else:
+                # Also check if chrome process is still alive
+                sess = sessions.get(profile_id)
+                if sess and sess.get("chrome") and sess["chrome"].poll() is not None:
+                    log.warning(f"[watchdog] {profile_id} Chrome died (exit {sess['chrome'].poll()}) — restarting")
+                    restart_chrome(profile_id)
 
 def start_anti_disconnect(profile_id: str, interval: int = 90):
     _anti_disconnect_active[profile_id] = True
@@ -344,6 +459,14 @@ def api_sessions():
         }
     return jsonify(result)
 
+@app.route("/api/profiles/<pid>/restart-chrome", methods=["POST"])
+def api_restart_chrome(pid):
+    return jsonify(restart_chrome(pid))
+
+@app.route("/api/profiles/<pid>/health", methods=["GET"])
+def api_health(pid):
+    return jsonify(check_screen_health(pid))
+
 @app.route("/api/profiles/<pid>/sendtext", methods=["POST"])
 def api_sendtext(pid):
     if pid not in sessions:
@@ -358,15 +481,44 @@ def api_sendtext(pid):
     env = os.environ.copy()
     env["DISPLAY"] = display
 
-    # xdotool type handles unicode, spaces, special chars better than key
-    # --clearmodifiers resets shift/caps state first
+    # 1. Release any stuck modifier keys (Caps Lock, Shift, Ctrl etc.)
+    subprocess.run(["xdotool", "keyup", "shift", "ctrl", "alt", "super"], env=env, capture_output=True)
+    # Turn off Caps Lock if it's on
+    subprocess.run(["bash", "-c",
+        f"DISPLAY={display} xset q | grep -q 'Caps Lock:   on' && DISPLAY={display} xdotool key Caps_Lock || true"
+    ], env=env, capture_output=True)
+
+    # 2. Put text in X clipboard via xclip (most reliable for paste)
+    xclip = subprocess.run(["xclip", "-selection", "clipboard"], input=text,
+        env=env, capture_output=True, text=True)
+
+    # 3. Also type it directly via xdotool (works even without focus)
     result = subprocess.run(
-        ["xdotool", "type", "--clearmodifiers", "--delay", "30", "--", text],
+        ["xdotool", "type", "--clearmodifiers", "--delay", "20", "--", text],
         env=env, capture_output=True, text=True
     )
     if result.returncode != 0:
         return jsonify({"error": result.stderr.strip() or "xdotool failed"}), 500
-    return jsonify({"status": "ok", "chars": len(text)})
+    return jsonify({"status": "ok", "chars": len(text), "clipboard": xclip.returncode == 0})
+
+@app.route("/api/profiles/<pid>/resetkeys", methods=["POST"])
+def api_resetkeys(pid):
+    """Release all stuck modifier keys and turn off Caps Lock."""
+    if pid not in sessions:
+        return jsonify({"error": "not running"}), 400
+    sess = sessions[pid]
+    display = sess["info"]["display"]
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    # Release modifiers
+    subprocess.run(["xdotool", "keyup", "shift", "ctrl", "alt", "super", "Caps_Lock"], env=env, capture_output=True)
+    # Force caps lock off
+    subprocess.run(["bash", "-c",
+        f"DISPLAY={display} xset q | grep -q 'Caps Lock:   on' && DISPLAY={display} xdotool key Caps_Lock || true"
+    ], capture_output=True)
+    # Also clear any xdotool held keys
+    subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"], env=env, capture_output=True)
+    return jsonify({"status": "ok", "message": "modifiers reset"})
 
 @app.route("/api/status", methods=["GET"])
 def api_status():
