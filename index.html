@@ -85,6 +85,15 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 .p-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--white);}
 .p-sub{font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .p-tag{font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:4px;flex-shrink:0;letter-spacing:.05em;}
+.p-dl{
+  width:22px;height:22px;border-radius:5px;flex-shrink:0;
+  background:transparent;border:1px solid var(--border2);
+  color:var(--muted);font-size:11px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .12s;margin-left:2px;
+}
+.p-dl:hover{background:var(--bg3);color:var(--text);border-color:var(--text);}
+.p-dl:active{transform:scale(.92);}
 .tag-live{background:rgba(52,199,89,.1);color:var(--green);border:1px solid rgba(52,199,89,.22);}
 .tag-idle{background:var(--bg3);color:var(--muted);border:1px solid var(--border2);}
 
@@ -102,8 +111,9 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 /* Buttons */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:8px 14px;border:none;border-radius:8px;cursor:pointer;font-family:var(--ui);font-size:13px;font-weight:600;transition:all .12s;white-space:nowrap;letter-spacing:-.01em;}
 .btn:active{transform:scale(.97);}
-.btn-w{background:var(--white);color:#000;}
-.btn-w:hover{background:#e5e5e5;}
+.btn-w{background:#1c1c1e;color:#fff;}
+[data-theme="light"] .btn-w{background:#1c1c1e;color:#fff;}
+.btn-w:hover{background:#333;}
 .btn-g{background:rgba(52,199,89,.12);color:var(--green);border:1px solid rgba(52,199,89,.22);}
 .btn-g:hover{background:rgba(52,199,89,.2);}
 .btn-r{background:rgba(255,59,48,.1);color:var(--red);border:1px solid rgba(255,59,48,.22);}
@@ -199,7 +209,7 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 .fab{
   position:fixed;bottom:28px;right:28px;
   width:52px;height:52px;border-radius:50%;
-  background:var(--white);color:#000;
+  background:#1c1c1e;color:#fff;
   font-size:24px;font-weight:300;line-height:1;
   border:none;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
@@ -207,7 +217,9 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
   transition:transform .15s,background .15s;
   z-index:1000;
 }
-.fab:hover{background:#e8e8e8;transform:scale(1.07);}
+.fab:hover{background:#333;transform:scale(1.07);}
+[data-theme="light"] .fab{background:#1c1c1e;color:#fff;}
+[data-theme="light"] .fab:hover{background:#333;}
 .fab:active{transform:scale(.95);}
 .fab.open{opacity:0;pointer-events:none;transform:scale(0.7);}
 
@@ -446,6 +458,7 @@ function renderList(){
       +'<div class="p-info"><div class="p-name">'+esc(p.name)+'</div>'
       +'<div class="p-sub">'+esc(p.email||p.id)+'</div></div>'
       +'<span class="p-tag '+(on?'tag-live':'tag-idle')+'">'+(on?'LIVE':'IDLE')+'</span>'
+      +'<button class="p-dl" title="Download profile" onclick="event.stopPropagation();downloadProfile(\''+p.id+'\')">↓</button>'
       +'</div>';
   }).join('');
 }
@@ -635,6 +648,18 @@ function appendLog(id,d){
   if(parts.length>10) kaLog[id]=parts.slice(0,10).join('<br>');
   var el=document.getElementById('kl-'+id);
   if(el) el.innerHTML=kaLog[id];
+}
+
+function downloadProfile(id){
+  var p=profiles.find(function(x){return x.id===id;});
+  var name=p?p.name:id;
+  toast('Zipping '+name+'…','info');
+  var a=document.createElement('a');
+  a.href='/api/profiles/'+id+'/download';
+  a.download=name.replace(/[^a-z0-9]/gi,'_')+'.zip';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
