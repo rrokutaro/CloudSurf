@@ -33,14 +33,17 @@ DISPLAY_BASE  = 10     # :10, :11, :12 ...
 
 # Detect chrome binary
 CHROME_ENV = Path("/tmp/cloudsurf_chrome.env")
-CHROME_BIN = "google-chrome"
-NOVNC_PATH = "/usr/share/novnc"
+CHROME_BIN     = "google-chrome"
+NOVNC_PATH     = "/usr/share/novnc"
+WEBSOCKIFY_CMD = "websockify"
 if CHROME_ENV.exists():
     for line in CHROME_ENV.read_text().splitlines():
         if line.startswith("CHROME_BIN="):
             CHROME_BIN = line.split("=",1)[1]
         if line.startswith("NOVNC_PATH="):
             NOVNC_PATH = line.split("=",1)[1]
+        if line.startswith("WEBSOCKIFY_CMD="):
+            WEBSOCKIFY_CMD = line.split("=",1)[1]
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -136,8 +139,8 @@ def start_profile(profile_id: str) -> dict:
     time.sleep(1)
 
     # 4. Start NoVNC websockify
-    novnc_cmd = ["websockify", "--web", NOVNC_PATH,
-                  str(novnc_port), f"localhost:{vnc_port}"]
+    ws_cmd = WEBSOCKIFY_CMD.split()  # handle "python3 -m websockify"
+    novnc_cmd = ws_cmd + ["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
     novnc_proc = subprocess.Popen(
         novnc_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
