@@ -141,6 +141,9 @@
   .vnc-header { padding:8px 12px; background:var(--card); border-bottom:1px solid var(--border);
     font-size:11px; font-family:var(--font-mono); color:var(--muted); display:flex; justify-content:space-between; align-items:center; }
   .vnc-frame { width:100%; height:520px; border:none; display:block; }
+  .vnc-container iframe { background:#000; }
+  /* Prevent mobile browsers from unloading iframe on scroll */
+  .vnc-container { contain: layout; }
   .vnc-placeholder {
     height:240px; display:flex; flex-direction:column; align-items:center; justify-content:center;
     gap:12px; color:var(--muted); font-family:var(--font-mono); font-size:13px;
@@ -332,17 +335,17 @@ function buildNoVNCUrl(novnc_port) {
   const csMatch = host.match(/^(.+?)-(\d+)(\.app\.github\.dev)$/);
   if (csMatch) {
     const baseName = csMatch[1];  // everything before the current port
-    return `https://${baseName}-${novnc_port}.app.github.dev/vnc.html?autoconnect=true&resize=scale&quality=6`;
+    return `https://${baseName}-${novnc_port}.app.github.dev/vnc.html?autoconnect=true&resize=scale&quality=6&shared=true&show_dot=true&path=websockify`;
   }
   
   // Gitpod: replace port in subdomain
   const gpMatch = host.match(/^(\d+)-(.+\.gitpod\.io)$/);
   if (gpMatch) {
-    return `https://${novnc_port}-${gpMatch[2]}/vnc.html?autoconnect=true&resize=scale&quality=6`;
+    return `https://${novnc_port}-${gpMatch[2]}/vnc.html?autoconnect=true&resize=scale&quality=6&shared=true&show_dot=true&path=websockify`;
   }
   
   // Local / fallback
-  return `http://localhost:${novnc_port}/vnc.html?autoconnect=true&resize=scale&quality=6`;
+  return `http://localhost:${novnc_port}/vnc.html?autoconnect=true&resize=scale&quality=6&shared=true&show_dot=true&path=websockify`;
 }
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -434,10 +437,20 @@ function renderDetail(id) {
   const vncPanel = isRunning ? `
     <div class="vnc-container">
       <div class="vnc-header">
-        <span>🖥 Remote Browser — ${esc(profile.name)}</span>
-        <a href="${buildNoVNCUrl(sess.novnc_port)}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;">⊕ open full tab</a>
+        <span>🖥 ${esc(profile.name)}</span>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn btn-sm btn-ghost" onclick="sendClipboard('${id}')" title="Paste clipboard text into browser">⊕ paste text</button>
+          <button class="btn btn-sm btn-ghost" onclick="toggleKeyboard('${id}')" title="Show virtual keyboard (mobile)">⌨ keyboard</button>
+          <a href="${buildNoVNCUrl(sess.novnc_port)}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;">↗ full tab</a>
+        </div>
       </div>
-      <iframe class="vnc-frame" src="${buildNoVNCUrl(sess.novnc_port)}" allow="fullscreen"></iframe>
+      <div id="paste-bar-${id}" style="display:none;padding:8px 10px;background:var(--surface);border-bottom:1px solid var(--border);gap:8px;align-items:center;flex-wrap:wrap;">
+        <input id="paste-input-${id}" type="text" placeholder="Type or paste text here → send to browser..."
+          style="flex:1;min-width:200px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--font-mono);font-size:12px;outline:none;" />
+        <button class="btn btn-sm btn-primary" onclick="sendText('${id}')">▸ Send</button>
+        <button class="btn btn-sm btn-ghost" onclick="document.getElementById('paste-bar-${id}').style.display='none'">✕</button>
+      </div>
+      <iframe id="vnc-frame-${id}" class="vnc-frame" src="${buildNoVNCUrl(sess.novnc_port)}" allow="fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
     </div>
   ` : `
     <div class="vnc-placeholder">
@@ -552,6 +565,66 @@ async function manualClick(id) {
   const res = await fetch(`${API}/api/profiles/${id}/click`, {method:'POST'});
   const d = await res.json();
   toast(d.error || `Mouse click sent → [${d.moved_to?.[0]}, ${d.moved_to?.[1]}]`, d.error ? 'error' : 'info');
+}
+
+// ── VNC helpers ──────────────────────────────────────────────────────────────
+
+function toggleKeyboard(id) {
+  // Send a message into the NoVNC iframe to toggle its virtual keyboard
+  const frame = document.getElementById(`vnc-frame-${id}`);
+  if (!frame) return;
+  try {
+    // NoVNC listens for this — works when same-origin; for cross-origin open full tab
+    frame.contentWindow.postMessage({action: 'toggleKeyboard'}, '*');
+  } catch(e) {}
+  // Fallback: focus the iframe so mobile keyboard appears
+  frame.focus();
+  toast('Tap inside the browser view to type. For mobile keyboard use ↗ full tab.', 'info');
+}
+
+function sendClipboard(id) {
+  const bar = document.getElementById(`paste-bar-${id}`);
+  if (!bar) return;
+  const isHidden = bar.style.display === 'none' || bar.style.display === '';
+  bar.style.display = isHidden ? 'flex' : 'none';
+  if (isHidden) {
+    // Try to read clipboard and pre-fill
+    navigator.clipboard?.readText().then(txt => {
+      if (txt) document.getElementById(`paste-input-${id}`).value = txt;
+    }).catch(() => {});
+    setTimeout(() => document.getElementById(`paste-input-${id}`)?.focus(), 50);
+  }
+}
+
+async function sendText(id) {
+  const input = document.getElementById(`paste-input-${id}`);
+  if (!input) return;
+  const text = input.value;
+  if (!text) return;
+
+  const res = await fetch(`${API}/api/profiles/${id}/sendtext`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text})
+  });
+  const d = await res.json();
+  if (d.error) {
+    toast(d.error, 'error');
+  } else {
+    toast(`Sent ${text.length} chars`, 'success');
+    input.value = '';
+    document.getElementById(`paste-bar-${id}`).style.display = 'none';
+  }
+}
+
+// Prevent iframe reconnect on focus loss — keep-alive ping to iframe
+function keepIframeAlive(id) {
+  setInterval(() => {
+    const frame = document.getElementById(`vnc-frame-${id}`);
+    if (frame) {
+      try { frame.contentWindow.postMessage({action: 'ping'}, '*'); } catch(e) {}
+    }
+  }, 15000);
 }
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
