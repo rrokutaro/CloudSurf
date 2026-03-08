@@ -11,6 +11,8 @@
 <link rel="manifest" href="/manifest.json"/>
 <title>CloudSurf</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<!-- GSAP Core -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
 <style>
 :root{
   --bg:#0a0a0a;
@@ -46,23 +48,31 @@
 }
 *{box-sizing:border-box;margin:0;padding:0;transition:background-color .2s ease,border-color .2s ease,color .15s ease;}
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--ui);-webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-feature-settings:"cv11","ss01";}
-.app{height:100vh;overflow:hidden;}
+.app{height:100vh;overflow:hidden;position:relative;z-index:2;}
 main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 
+/* Ambient Background Animation */
+#ambient-bg {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 1; overflow: hidden;
+    background: radial-gradient(circle at 50% 50%, rgba(14, 103, 75, 0.08), transparent 60%);
+    opacity: 0.6;
+}
+
 /* ── Sidebar ── */
-.sidebar{display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--bg);overflow:hidden;}
+.sidebar{display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--bg);overflow:hidden;position:relative;z-index:5;}
 .sidebar-inner{flex:1;overflow-y:auto;padding:0 0 24px;}
 .sidebar-inner::-webkit-scrollbar{width:3px;}
 .sidebar-inner::-webkit-scrollbar-thumb{background:var(--muted2);}
 
-/* Intro */
+/* Intro - Initial States for Animation */
 .intro{padding:28px 22px 22px;border-bottom:1px solid var(--border);}
-.intro-heading{font-size:clamp(26px,4.5vw,38px);font-weight:700;line-height:1.1;letter-spacing:-.03em;color:var(--white);margin-bottom:12px;}
-.intro-body{font-size:12px;line-height:1.65;color:var(--muted);}
+.intro-heading{font-size:clamp(26px,4.5vw,38px);font-weight:700;line-height:1.1;letter-spacing:-.03em;color:var(--white);margin-bottom:12px; opacity: 0;}
+.intro-body{font-size:12px;line-height:1.65;color:var(--muted); opacity: 0;}
 
 /* Stats grid */
 .stats-row{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--border);}
-.stat-cell{padding:14px 18px;border-right:1px solid var(--border);position:relative;}
+.stat-cell{padding:14px 18px;border-right:1px solid var(--border);position:relative; opacity: 0;}
 .stat-cell:nth-child(even){border-right:none;}
 .stat-cell:nth-child(n+3){border-top:1px solid var(--border);}
 .stat-num{font-size:20px;font-weight:700;color:var(--white);letter-spacing:-.02em;font-family:var(--mono);}
@@ -71,7 +81,7 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 .stat-sub{font-size:9px;font-family:var(--mono);color:var(--muted2);margin-top:2px;}
 
 /* Section label */
-.sec{padding:14px 22px 8px;font-size:10px;font-family:var(--mono);color:var(--muted);letter-spacing:.1em;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between;}
+.sec{padding:14px 22px 8px;font-size:10px;font-family:var(--mono);color:var(--muted);letter-spacing:.1em;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between; opacity: 0;}
 .sec-count{color:var(--white);}
 
 /* Profile list - Gradient Style */
@@ -79,10 +89,11 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
   display:flex;align-items:center;gap:11px;
   padding:12px 22px; 
   cursor:pointer;
-  transition:filter .15s, transform .15s; 
+  transition:filter .15s; 
   border-left:4px solid transparent;
   margin-bottom:1px; 
   color: #fff; 
+  /* Initial state: handled by JS/CSS logic */
 }
 
 /* Hover effects using brightness */
@@ -126,7 +137,7 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 .tag-live{color:var(--green);}
 .tag-idle{color:rgba(255,255,255,0.5);}
 
-.empty{padding:32px 22px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;}
+.empty{padding:32px 22px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center; opacity: 0;}
 .empty-glyph{font-size:22px;opacity:.12;}
 .empty-txt{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.6;}
 
@@ -156,12 +167,12 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 .btn-xs{padding:3px 8px;font-size:11px;border-radius:6px;font-family:var(--mono);}
 
 /* ── Right panel ── */
-.right{overflow-y:auto;background:var(--bg);display:flex;flex-direction:column;}
+.right{overflow-y:auto;background:var(--bg);display:flex;flex-direction:column;position:relative;z-index:4;}
 .right::-webkit-scrollbar{width:3px;}
 .right::-webkit-scrollbar-thumb{background:var(--muted2);}
 
 /* Detail */
-.detail{padding:28px 32px;display:flex;flex-direction:column;gap:14px;}
+.detail{padding:28px 32px;display:flex;flex-direction:column;gap:14px; opacity: 1;}
 .d-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding-bottom:20px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
 .d-name{font-size:26px;font-weight:700;letter-spacing:-.025em;color:var(--white);}
 .d-email{font-size:12px;font-family:var(--mono);color:var(--muted);margin-top:4px;}
@@ -212,7 +223,7 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 
 /* Toasts */
 #toasts{position:fixed;bottom:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:6px;pointer-events:none;}
-.toast{padding:8px 13px;border-radius:8px;font-family:var(--mono);font-size:11.5px;border-left:2px solid;animation:tin .18s ease;max-width:280px;}
+.toast{padding:8px 13px;border-radius:8px;font-family:var(--mono);font-size:11.5px;border-left:2px solid;animation:tin .18s ease;max-width:280px;box-shadow:0 5px 15px rgba(0,0,0,0.3);}
 .toast.ok{background:rgba(52,199,89,.08);border-color:var(--green);color:var(--green);}
 .toast.err{background:rgba(255,59,48,.08);border-color:var(--red);color:var(--red);}
 .toast.info{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.15);color:rgba(255,255,255,.55);}
@@ -341,6 +352,7 @@ main{display:grid;grid-template-columns:320px 1fr;height:100vh;overflow:hidden;}
 </style>
 </head>
 <body>
+<div id="ambient-bg"></div>
 <div id="loader">
   <div class="loader-word">CloudSurf</div>
 </div>
@@ -396,20 +408,78 @@ var profiles=[],sessions={},selected=null,kaState={},kaLog={};
 var lastActionJson={};
 // Track oldest session start for uptime display
 var oldestStart=null;
+// Animation flags
+var firstRender = true;
+var lastSelected = null;
+var statsCache = {active: 0, ka: 0, count: 0};
 
 async function init(){
   await refresh();
   setInterval(refresh,3000);
   setInterval(tickUptime,1000);
   fetchServerLocation();
-  // Dismiss loader
+  // Dismiss loader and trigger Intro Animation
   var loader=document.getElementById('loader');
   var app=document.getElementById('app-root');
   if(app) app.style.opacity='1';
   if(loader){
     loader.classList.add('done');
-    setTimeout(function(){loader.style.display='none';},450);
+    setTimeout(function(){loader.style.display='none'; runIntroAnim();},450);
   }
+}
+
+// ── GSAP Intro ────────────────────────────────────────────────────────────
+function runIntroAnim() {
+    // Ambient orb movement
+    gsap.to("#ambient-bg", {
+        scale: 1.5,
+        opacity: 0.4,
+        duration: 10,
+        repeat: -1,
+        yoyo: true,
+        ease: "sine.inOut"
+    });
+
+    var tl = gsap.timeline();
+    
+    // Snappy Waterfall Reveal
+    // Elements start with opacity:0 in CSS
+    
+    // 1. Heading
+    tl.fromTo(".intro-heading", 
+        {opacity:0, y:-15}, 
+        {opacity:1, y:0, duration: 0.4, ease: "power2.out"}
+    )
+    // 2. Body Text
+    .fromTo(".intro-body", 
+        {opacity:0, y:-15}, 
+        {opacity:1, y:0, duration: 0.4, ease: "power2.out"}, 
+        "-=0.3"
+    )
+    // 3. Stats Grid
+    .fromTo(".stat-cell", 
+        {opacity:0, y:-15}, 
+        {opacity:1, y:0, duration: 0.3, stagger: 0.05, ease: "power2.out"}, 
+        "-=0.25"
+    )
+    // 4. Section Label
+    .fromTo(".sec", 
+        {opacity:0, y:-10}, 
+        {opacity:1, y:0, duration: 0.3, ease: "power2.out"}, 
+        "-=0.2"
+    );
+    
+    // 5. Trigger Profile List items if they exist
+    // They are rendered with style="opacity:0" by renderList during firstRender
+    if(profiles.length > 0) {
+        tl.to(".p-item", 
+            {opacity:1, y:0, duration: 0.3, stagger: 0.04, ease: "power2.out"}, 
+            "-=0.15"
+        );
+    } else {
+        var empty = document.querySelector(".empty");
+        if(empty) tl.fromTo(empty, {opacity:0, y:-10}, {opacity:1, y:0, duration: 0.4}, "-=0.1");
+    }
 }
 
 // ── Server location (fetched from instance, not browser) ──────────────────
@@ -467,21 +537,37 @@ async function refresh(){
 function updateStats(){
   var active=Object.keys(sessions).length;
   var kaOn=Object.values(sessions).filter(function(s){return s.ka_active;}).length;
-  document.getElementById('s-active').textContent=active;
-  document.getElementById('s-ka').textContent=kaOn;
-  document.getElementById('p-count').textContent=profiles.length;
+  var count = profiles.length;
+
+  // Animate Numbers if changed
+  if(statsCache.active !== active) {
+      gsap.to("#s-active", {innerText: active, snap: {innerText:1}, duration: 1, ease: "power2.out"});
+      statsCache.active = active;
+  }
+  if(statsCache.ka !== kaOn) {
+      gsap.to("#s-ka", {innerText: kaOn, snap: {innerText:1}, duration: 1, ease: "power2.out"});
+      statsCache.ka = kaOn;
+  }
+  if(statsCache.count !== count) {
+      gsap.to("#p-count", {innerText: count, snap: {innerText:1}, duration: 0.5});
+      statsCache.count = count;
+  }
 }
 
-// Modified renderList for Custom Hex Gradient
+// Modified renderList for Custom Hex Gradient + GSAP Entrance
 function renderList(){
   var el=document.getElementById('profile-list');
   if(!profiles.length){
     el.innerHTML='<div class="empty"><div class="empty-glyph">◫</div><div class="empty-txt">No profiles yet.<br>Create one below.</div></div>';
+    if(!firstRender) { 
+        var empty = el.querySelector('.empty');
+        if(empty) empty.style.opacity = 1;
+    }
+    firstRender = false; 
     return;
   }
   
   var total = profiles.length;
-  
   // Start Color: #0e674b -> RGB(14, 103, 75)
   // End Color:   #041a13 -> RGB(4, 26, 19)
   var sR = 14, sG = 103, sB = 75;
@@ -497,8 +583,14 @@ function renderList(){
     var b = Math.round(sB + pct * (eB - sB));
     
     var bgStyle = 'background-color: rgb('+r+','+g+','+b+')';
+    
+    // Logic to prevent disappearing profiles:
+    // Only apply initial hidden state (opacity:0) if it is TRULY the first render.
+    // Immediately after generating this string, we will flip firstRender to false.
+    // Subsequent calls (refresh interval) will generate HTML with no inline opacity/transform style.
+    var animStyle = firstRender ? 'opacity:0; transform:translateY(-10px);' : '';
 
-    return '<div class="p-item'+(on?' live':'')+(sel?' sel':'')+'" onclick="selectProfile(\''+p.id+'\')" style="'+bgStyle+'">'
+    return '<div class="p-item'+(on?' live':'')+(sel?' sel':'')+'" onclick="selectProfile(\''+p.id+'\')" style="'+bgStyle+';'+animStyle+'">'
       +'<div class="p-dot"></div>'
       +'<div class="p-info"><div class="p-name">'+esc(p.name)+'</div>'
       +'<div class="p-sub">'+esc(p.email||p.id)+'</div></div>'
@@ -506,9 +598,25 @@ function renderList(){
       +'<button class="p-dl" title="Download profile" onclick="event.stopPropagation();downloadProfile(\''+p.id+'\')">↓</button>'
       +'</div>';
   }).join('');
+
+  // If we just rendered items hidden for the animation, mark firstRender as done immediately.
+  // The runIntroAnim function will pick up these specific .p-item elements and animate them to opacity:1.
+  // The next refresh() (3 seconds later) will see firstRender=false and render them plainly visible.
+  if(firstRender && profiles.length > 0) {
+      // Delay flipping just slightly if needed, but usually safe to flip now 
+      // because runIntroAnim creates the timeline targeting these specific DOM nodes.
+      // However, to be safe against a very fast refresh race condition, we flip it.
+      // Note: runIntroAnim is called AFTER refresh() in init(), so it will find these nodes.
+      // We flip the flag here.
+      setTimeout(function(){ firstRender = false; }, 100); 
+  }
 }
 
-function selectProfile(id){selected=id;renderList();renderDetail(id);}
+function selectProfile(id){
+    selected=id;
+    renderList();
+    renderDetail(id);
+}
 
 function buildVncUrl(port){
   var host=window.location.hostname,params='autoconnect=true&resize=scale&quality=0&compression=0&shared=true&view_only=false';
@@ -523,6 +631,11 @@ function renderDetail(id){
   var p=profiles.find(function(x){return x.id===id;});
   if(!p) return;
   var sess=sessions[id],on=!!sess,ka=on&&sess.ka_active,intv=kaState[id]||10;
+  
+  // Detect if we switched profile to trigger animation
+  var isNewSelection = (lastSelected !== id);
+  lastSelected = id;
+
   var h='<div class="detail">';
 
   h+='<div class="d-header"><div>';
@@ -582,7 +695,16 @@ function renderDetail(id){
   }
 
   h+='</div>';
-  document.getElementById('right-panel').innerHTML=h;
+  var rp = document.getElementById('right-panel');
+  rp.innerHTML=h;
+  
+  // Only animate if the selection actually changed to avoid breathing/flashing on every refresh tick
+  if(isNewSelection) {
+      gsap.fromTo(".detail > *", 
+        {opacity: 0, y: 15}, 
+        {opacity: 1, y: 0, duration: 0.4, stagger: 0.06, ease: "power2.out"}
+      );
+  }
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -646,6 +768,9 @@ async function doToggleKA(id){
 }
 
 async function doClick(id){
+  // Animating the button click
+  gsap.fromTo(event.target, {scale: 0.95}, {scale: 1, duration: 0.3, ease: "elastic.out(1, 0.5)"});
+  
   var res=await fetch('/api/profiles/'+id+'/click',{method:'POST'});
   var d=await res.json();
   if(d.error){toast(d.error,'err');return;}
@@ -666,6 +791,10 @@ function togglePaste(id){
   var bar=document.getElementById('pb-'+id);if(!bar)return;
   var open=bar.style.display==='flex';
   bar.style.display=open?'none':'flex';
+  
+  // Animation for paste bar
+  if(!open) { gsap.from(bar, {height: 0, opacity: 0, duration: 0.3}); }
+  
   var fab=document.getElementById('fab');
   if(fab) fab.style.display=open?'':'none';
   if(!open){
@@ -713,7 +842,13 @@ function toast(msg,type){
   el.className='toast '+(type==='ok'?'ok':type==='err'?'err':'info');
   el.textContent=msg;
   document.getElementById('toasts').appendChild(el);
-  setTimeout(function(){el.remove();},3000);
+  
+  // GSAP Entrance
+  gsap.from(el, {y: 20, opacity: 0, duration: 0.3, ease: "back.out(1.5)"});
+  
+  setTimeout(function(){
+      gsap.to(el, {opacity: 0, y: 10, duration: 0.2, onComplete: function(){el.remove();}});
+  },3000);
 }
 
 
@@ -721,9 +856,19 @@ function toggleModal(){
   var o=document.getElementById('modal-overlay');
   var f=document.getElementById('fab');
   var open=o.classList.contains('show');
-  if(open){closeModal();}else{
+  
+  if(open){
+      // GSAP Exit
+      gsap.to(".modal-sheet", {y: 50, opacity: 0, duration: 0.2, onComplete: function(){
+          closeModal();
+          // Reset for next open
+          gsap.set(".modal-sheet", {y: 0, opacity: 1}); 
+      }});
+  }else{
     o.classList.add('show');
     f.classList.add('open');
+    // GSAP Entrance
+    gsap.fromTo(".modal-sheet", {y: 100, opacity: 0}, {y: 0, opacity: 1, duration: 0.4, ease: "power3.out"});
     setTimeout(function(){document.getElementById('inp-name').focus();},200);
   }
 }
@@ -732,7 +877,7 @@ function closeModal(){
   document.getElementById('fab').classList.remove('open');
 }
 function overlayClick(e){
-  if(e.target===document.getElementById('modal-overlay')) closeModal();
+  if(e.target===document.getElementById('modal-overlay')) toggleModal(); // trigger exit anim
 }
 
 
@@ -795,7 +940,7 @@ init();
     <div class="field"><label>Notes</label><textarea id="inp-notes" placeholder="Colab slot #3..."></textarea></div>
     <div class="modal-actions">
       <button class="btn btn-w" style="flex:1" onclick="createProfile()">Create Profile</button>
-      <button class="btn btn-gh" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gh" onclick="toggleModal()">Cancel</button>
     </div>
   </div>
 </div>
