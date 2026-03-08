@@ -148,39 +148,45 @@ def start_profile(pid):
     env        = {**os.environ, "DISPLAY": f":{display}"}
 
     log.info(f"Starting {pid}: :{display} novnc={novnc_port}")
-    xvfb = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", "1280x900x24", "-ac"],
+    
+    # OPTIMIZATION 1: Dropped to 16-bit color (1280x900x16) to halve bandwidth
+    # OPTIMIZATION 2: Added "+extension DAMAGE" so x11vnc doesn't have to poll manually
+    xvfb = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", "1280x900x16", "-ac", "+extension", "DAMAGE"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1.2)
+    
     wm = subprocess.Popen(["openbox"], env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    vnc = subprocess.Popen(
-        ["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
+        
+    # OPTIMIZATION 3: CPU-friendly x11vnc settings negotiated for cloud connections
+    vnc = subprocess.Popen(["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
          "-nopw", "-forever", "-shared", "-quiet",
-         "-wait", "1",        # poll every 1ms — maximum responsiveness
-         "-defer", "1",       # flush updates almost immediately
-         "-speeds", "modem",  # forces raw/copyrect encodings — fastest, no compression
-         "-nocursorshape",    # send real cursor position
-         "-noxdamage",        # skip XDamage; direct polling is faster in Xvfb
-         "-noscr",            # disable scrolling copy optimisation (causes lag)
-         "-nowireframe",      # skip wireframe move/resize (cleaner)
+         "-xdamage",          # Only process pixels that actually change
+         "-wait", "20",       # Limit to ~50 FPS to stop CPU starvation
+         "-defer", "20",      # Batch updates to save network overhead
+         "-cursor", "arrow",  # Hardware/client-side cursor for instant mouse feel
+         "-tightfilexfer",    # Optimize for NoVNC/Tight encoding
          ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
-    ws_cmd = WEBSOCKIFY_CMD.split() + ["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
+    
+    ws_cmd = WEBSOCKIFY_CMD.split() +["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
     novnc = subprocess.Popen(ws_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
-    chrome = subprocess.Popen(
-        [CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS + ["about:blank"],
+    
+    chrome = subprocess.Popen([CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS + ["https://colab.research.google.com/"],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     info = {"profile_id": pid, "display": f":{display}", "vnc_port": vnc_port,
             "novnc_port": novnc_port, "started_at": datetime.now().isoformat(), "last_action": None}
     sessions[pid] = {"slot": slot, "xvfb": xvfb, "wm": wm, "vnc": vnc,
                      "novnc": novnc, "chrome": chrome, "info": info}
+    
     mf = pdir / "meta.json"
     meta = json.loads(mf.read_text()) if mf.exists() else {"id": pid, "name": pid, "created_at": datetime.now().isoformat()}
     meta["last_started"] = datetime.now().isoformat()
     save_meta(pid, meta)
+    
     # Auto-forward port in Codespaces/Gitpod if gh CLI available
     threading.Thread(target=_autoforward_port, args=(novnc_port,), daemon=True).start()
     return {"status": "started", **info}
