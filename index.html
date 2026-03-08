@@ -483,6 +483,7 @@ function renderDetail(id){
   h+='<div class="d-header"><div>';
   h+='<div class="d-name">'+esc(p.name)+'</div>';
   h+='<div class="d-email">'+esc(p.email||'—')+'</div>';
+  if(p.url) h+='<div class="d-notes"><a href="'+esc(p.url)+'" target="_blank" style="color:var(--muted);font-size:11px;font-family:var(--mono);">'+esc(p.url)+'</a></div>';
   if(p.notes) h+='<div class="d-notes">'+esc(p.notes)+'</div>';
   h+='</div><div class="d-actions">';
   if(on) h+='<button class="btn btn-r btn-sm" onclick="doStop(\''+id+'\')">■ Stop</button>';
@@ -546,8 +547,9 @@ async function createProfile(){
   var name=document.getElementById('inp-name').value.trim();
   var email=document.getElementById('inp-email').value.trim();
   var notes=document.getElementById('inp-notes').value.trim();
+  var url=document.getElementById('inp-url').value.trim();
   if(!name){toast('Enter a name','err');return;}
-  var res=await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,email:email,notes:notes})});
+  var res=await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,email:email,notes:notes,url:url})});
   if(!res.ok){toast('Failed to create','err');return;}
   var p=await res.json();
   closeModal();
@@ -555,6 +557,7 @@ async function createProfile(){
   document.getElementById('inp-name').value='';
   document.getElementById('inp-email').value='';
   document.getElementById('inp-notes').value='';
+  document.getElementById('inp-url').value='';
   await refresh(); selectProfile(p.id);
 }
 
@@ -748,6 +751,7 @@ init();
     <div class="field"><label>Name</label><input id="inp-name" placeholder="Gmail Account 3" autocomplete="off"/></div>
     <div class="field"><label>Email</label><input id="inp-email" placeholder="user@gmail.com" autocomplete="off"/></div>
     <div class="field"><label>Notes</label><textarea id="inp-notes" placeholder="Colab slot #3..."></textarea></div>
+    <div class="field"><label>Default URL</label><input id="inp-url" placeholder="https://colab.research.google.com" autocomplete="off"/></div>
     <div class="modal-actions">
       <button class="btn btn-w" style="flex:1" onclick="createProfile()">Create Profile</button>
       <button class="btn btn-gh" onclick="closeModal()">Cancel</button>
