@@ -169,9 +169,8 @@ def start_profile(pid):
     ws_cmd = WEBSOCKIFY_CMD.split() + ["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
     novnc = subprocess.Popen(ws_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
-    _start_url = (meta.get("url") or "").strip() or "about:blank"
     chrome = subprocess.Popen(
-        [CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS + [_start_url],
+        [CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS + ["about:blank"],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     info = {"profile_id": pid, "display": f":{display}", "vnc_port": vnc_port,
@@ -329,7 +328,7 @@ def api_create():
     if not name: return jsonify({"error": "name required"}), 400
     pid  = name.lower().replace(" ", "_").replace("@", "_at_")[:28] + "_" + str(int(time.time()))[-5:]
     meta = {"id": pid, "name": name, "email": d.get("email",""),
-            "notes": d.get("notes",""), "url": d.get("url",""), "created_at": datetime.now().isoformat()}
+            "notes": d.get("notes",""), "created_at": datetime.now().isoformat()}
     save_meta(pid, meta)
     return jsonify(meta), 201
 
