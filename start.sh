@@ -26,8 +26,9 @@ if [ "$NEEDS_SETUP" = "1" ]; then
     fi
 fi
 
-# ── Kill any previous manager instance ───────────────────────────────────────
-pkill -f "manager.py" 2>/dev/null || true
+# ── Kill any previous instances ───────────────────────────────────────────────
+pkill -f "manager.py"       2>/dev/null || true
+pkill -f "cloudsurf_keep"   2>/dev/null || true
 sleep 0.5
 
 echo -e "${CYAN}Starting CloudSurf...${NC}"
@@ -48,6 +49,32 @@ for i in $(seq 1 20); do
     echo -n "."
 done
 
+# ── Codespaces keep-alive + manager watchdog ─────────────────────────────────
+# Pings our own API every 4 min — prevents Codespace inactivity shutdown.
+# Also restarts manager.py automatically if it ever crashes.
+cat > /tmp/cloudsurf_keep.sh << 'KEEPALIVE'
+#!/bin/bash
+SCRIPT_DIR="__SCRIPT_DIR__"
+while true; do
+    curl -sf http://localhost:7860/api/status > /dev/null 2>&1
+    if [ -f /tmp/cloudsurf.pid ]; then
+        PID=$(cat /tmp/cloudsurf.pid)
+        if ! kill -0 "$PID" 2>/dev/null; then
+            echo "[keepalive $(date)] Manager died — restarting..." >> "$SCRIPT_DIR/logs/manager.log"
+            nohup python3 "$SCRIPT_DIR/manager.py" >> "$SCRIPT_DIR/logs/manager.log" 2>&1 &
+            echo $! > /tmp/cloudsurf.pid
+        fi
+    fi
+    sleep 240
+done
+KEEPALIVE
+
+sed -i "s|__SCRIPT_DIR__|$SCRIPT_DIR|g" /tmp/cloudsurf_keep.sh
+chmod +x /tmp/cloudsurf_keep.sh
+nohup bash /tmp/cloudsurf_keep.sh >> "$SCRIPT_DIR/logs/keepalive.log" 2>&1 &
+echo $! > /tmp/cloudsurf_keep.pid
+echo -e "  ${GREEN}✓${NC} Codespace keep-alive active (pings every 4 min)"
+
 # ── Status ────────────────────────────────────────────────────────────────────
 if kill -0 $MANAGER_PID 2>/dev/null; then
     echo ""
@@ -55,6 +82,7 @@ if kill -0 $MANAGER_PID 2>/dev/null; then
     echo -e "  ${CYAN}│${NC}  ${GREEN}CloudSurf is running${NC}                      ${CYAN}│${NC}"
     echo -e "  ${CYAN}│${NC}  UI:   http://localhost:7860               ${CYAN}│${NC}"
     echo -e "  ${CYAN}│${NC}  Logs: tail -f logs/manager.log            ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}  Keep: tail -f logs/keepalive.log          ${CYAN}│${NC}"
     echo -e "  ${CYAN}└─────────────────────────────────────────────┘${NC}"
     echo ""
 else
