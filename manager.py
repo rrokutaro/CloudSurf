@@ -32,17 +32,34 @@ if cfg.exists():
         if k == "WEBSOCKIFY_CMD": WEBSOCKIFY_CMD = v
 
 # ── Auto-launch / automation env vars ────────────────────────────────────────
-# CLOUDSURF_AUTO_LAUNCH  = comma-separated profile IDs to launch on startup
-#                          e.g. "alice_12345,bob_67890"
-# CLOUDSURF_AUTO_SCRIPT  = script name (from scripts/) to run on each
-#                          auto-launched profile once Chrome is ready
-#                          e.g. "colab_run_all.js"
-# CLOUDSURF_SCRIPT_DELAY = seconds to wait after Chrome launches before
-#                          running the script (default: 6)
-AUTO_LAUNCH_IDS   = [x.strip() for x in os.environ.get("CLOUDSURF_AUTO_LAUNCH", "").split(",") if x.strip()]
-AUTO_SCRIPT       = os.environ.get("CLOUDSURF_AUTO_SCRIPT", "").strip()
-AUTO_SCRIPT_DELAY = int(os.environ.get("CLOUDSURF_SCRIPT_DELAY", "6"))
-SCRIPTS_DIR       = BASE_DIR / "scripts"
+#
+# CLOUDSURF_AUTO_LAUNCH      comma-separated profile IDs to launch on startup
+#                             e.g. "alice_12345,bob_67890"
+#
+# CLOUDSURF_AUTO_SCRIPT       script name from scripts/ to run on each profile
+#                             e.g. "colab_run_all"
+#
+# CLOUDSURF_SCRIPT_DELAY      seconds to wait after Chrome launches before
+#                             running the script the first time (default: 6)
+#
+# CLOUDSURF_SCRIPT_REPEAT     how many times to run the script per profile
+#                             1 = run once, 0 = run forever, default: 1
+#
+# CLOUDSURF_SCRIPT_INTERVAL   seconds between repeated script runs (default: 60)
+#
+# CLOUDSURF_KEEPALIVE         "true" to auto-start keep-alive for every
+#                             auto-launched profile (default: false)
+#
+# CLOUDSURF_KEEPALIVE_INTERVAL seconds between keep-alive ticks (default: 90)
+#
+AUTO_LAUNCH_IDS        = [x.strip() for x in os.environ.get("CLOUDSURF_AUTO_LAUNCH", "").split(",") if x.strip()]
+AUTO_SCRIPT            = os.environ.get("CLOUDSURF_AUTO_SCRIPT", "").strip()
+AUTO_SCRIPT_DELAY      = int(os.environ.get("CLOUDSURF_SCRIPT_DELAY", "6"))
+AUTO_SCRIPT_REPEAT     = int(os.environ.get("CLOUDSURF_SCRIPT_REPEAT", "1"))   # 0 = infinite
+AUTO_SCRIPT_INTERVAL   = int(os.environ.get("CLOUDSURF_SCRIPT_INTERVAL", "60"))
+AUTO_KEEPALIVE         = os.environ.get("CLOUDSURF_KEEPALIVE", "").lower() == "true"
+AUTO_KEEPALIVE_INTERVAL = int(os.environ.get("CLOUDSURF_KEEPALIVE_INTERVAL", "90"))
+SCRIPTS_DIR            = BASE_DIR / "scripts"
 SCRIPTS_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
@@ -382,11 +399,41 @@ def run_script(pid: str, script_name: str, extra_env: dict | None = None) -> dic
         return {"error": str(e)}
 
 
+def _script_repeat_worker(pid, script_name, repeat, interval):
+    """
+    Runs a script against a profile on a loop.
+      repeat=1  → run once and stop
+      repeat=N  → run N times with `interval` seconds between each
+      repeat=0  → run forever until the profile stops
+    The initial delay (CLOUDSURF_SCRIPT_DELAY) is handled by the caller
+    before this thread is spawned.
+    """
+    run_count = 0
+    while pid in sessions:
+        run_count += 1
+        log.info(f"[script-repeat] {pid} run #{run_count} of {'∞' if repeat == 0 else repeat}")
+        result = run_script(pid, script_name)
+        log.info(f"[script-repeat] {pid} run #{run_count} → {result.get('status')} rc={result.get('returncode')}")
+
+        # Stop if we've hit the target (0 means infinite)
+        if repeat != 0 and run_count >= repeat:
+            log.info(f"[script-repeat] {pid} reached repeat limit ({repeat}) — done")
+            break
+
+        # Wait for next run, bailing early if profile stops
+        slept = 0
+        while slept < interval and pid in sessions:
+            time.sleep(min(1, interval - slept))
+            slept += 1
+
+
 def _auto_launch_all():
     """
     Called once in a background thread after Flask binds.
-    Launches each profile listed in CLOUDSURF_AUTO_LAUNCH, then optionally
-    runs CLOUDSURF_AUTO_SCRIPT against each one.
+    For each profile in CLOUDSURF_AUTO_LAUNCH:
+      1. Launches the profile
+      2. Optionally starts keep-alive (CLOUDSURF_KEEPALIVE=true)
+      3. Optionally runs the script N times (CLOUDSURF_SCRIPT_REPEAT)
     """
     if not AUTO_LAUNCH_IDS:
         return
@@ -401,15 +448,24 @@ def _auto_launch_all():
         except Exception:
             continue
 
-    log.info(f"[auto-launch] profiles to launch: {AUTO_LAUNCH_IDS}")
-    # Stagger slightly so ports/displays don't race
+    log.info(f"[auto-launch] profiles: {AUTO_LAUNCH_IDS}")
+    if AUTO_SCRIPT:
+        repeat_label = "∞" if AUTO_SCRIPT_REPEAT == 0 else str(AUTO_SCRIPT_REPEAT)
+        log.info(f"[auto-launch] script={AUTO_SCRIPT} repeat={repeat_label} interval={AUTO_SCRIPT_INTERVAL}s delay={AUTO_SCRIPT_DELAY}s")
+    if AUTO_KEEPALIVE:
+        log.info(f"[auto-launch] keep-alive=on interval={AUTO_KEEPALIVE_INTERVAL}s")
+
+    # Stagger launches so ports/displays don't race
     for i, pid in enumerate(AUTO_LAUNCH_IDS):
         if i > 0:
             time.sleep(2)
+
         pdir = PROFILES_DIR / pid
         if not pdir.exists():
             log.warning(f"[auto-launch] profile '{pid}' not found — skipping")
             continue
+
+        # Launch
         if pid in sessions:
             log.info(f"[auto-launch] {pid} already running — skipping launch")
         else:
@@ -417,15 +473,25 @@ def _auto_launch_all():
                 r = start_profile(pid)
                 log.info(f"[auto-launch] {pid} → {r.get('status')}")
             except Exception as e:
-                log.error(f"[auto-launch] {pid} failed: {e}")
+                log.error(f"[auto-launch] {pid} failed to launch: {e}")
                 continue
 
+        # Auto keep-alive
+        if AUTO_KEEPALIVE:
+            _ka_active[pid] = True
+            threading.Thread(target=ka_worker, args=(pid, AUTO_KEEPALIVE_INTERVAL), daemon=True).start()
+            log.info(f"[auto-launch] keep-alive started for {pid} every {AUTO_KEEPALIVE_INTERVAL}s")
+
+        # Auto script
         if AUTO_SCRIPT:
-            # Wait for Chrome to settle before connecting Puppeteer
-            log.info(f"[auto-launch] waiting {AUTO_SCRIPT_DELAY}s for Chrome ({pid}) …")
+            log.info(f"[auto-launch] waiting {AUTO_SCRIPT_DELAY}s for Chrome to settle ({pid}) …")
             time.sleep(AUTO_SCRIPT_DELAY)
-            result = run_script(pid, AUTO_SCRIPT)
-            log.info(f"[auto-launch] script result for {pid}: {result.get('status')} rc={result.get('returncode')}")
+            # Spin up a dedicated thread per profile so profiles run scripts in parallel
+            threading.Thread(
+                target=_script_repeat_worker,
+                args=(pid, AUTO_SCRIPT, AUTO_SCRIPT_REPEAT, AUTO_SCRIPT_INTERVAL),
+                daemon=True
+            ).start()
 
 
 threading.Thread(target=_auto_launch_all, daemon=True).start()
