@@ -3,9 +3,6 @@
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
 
   "features": {
-    "ghcr.io/devcontainers/features/python:1": {
-      "version": "3.11"
-    },
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/node:1": {
       "version": "20"
@@ -15,11 +12,7 @@
   "forwardPorts": [7860, 6080, 6081, 6082, 6083, 6084, 6085, 6086, 6087, 6088, 6089],
 
   "portsAttributes": {
-    "7860": {
-      "label": "CloudSurf UI",
-      "onAutoForward": "openBrowser",
-      "visibility": "public"
-    },
+    "7860": { "label": "CloudSurf UI", "onAutoForward": "openBrowser", "visibility": "public" },
     "6080": { "label": "Profile 0 — NoVNC", "onAutoForward": "silent", "visibility": "public" },
     "6081": { "label": "Profile 1 — NoVNC", "onAutoForward": "silent", "visibility": "public" },
     "6082": { "label": "Profile 2 — NoVNC", "onAutoForward": "silent", "visibility": "public" },
@@ -32,20 +25,14 @@
     "6089": { "label": "Profile 9 — NoVNC", "onAutoForward": "silent", "visibility": "public" }
   },
 
-  "otherPortsAttributes": {
-    "onAutoForward": "silent"
-  },
+  "otherPortsAttributes": { "onAutoForward": "silent" },
 
-  "postCreateCommand": "",
-  
-  "postStartCommand": "[ ! -f logs/setup.done ] && (mkdir -p logs && chmod +x setup.sh start.sh stop.sh && bash setup.sh 2>&1 | tee logs/setup.log && cd scripts && npm install && touch logs/setup.done); bash start.sh",
+  "postStartCommand": "[ ! -f logs/setup.done ] && (mkdir -p logs && chmod +x setup.sh start.sh stop.sh && bash setup.sh 2>&1 | tee logs/setup.log && cd scripts && npm install && cd .. && touch logs/setup.done); bash start.sh",
 
   "customizations": {
     "vscode": {
       "extensions": ["ms-python.python"],
-      "settings": {
-        "terminal.integrated.defaultProfile.linux": "bash"
-      }
+      "settings": { "terminal.integrated.defaultProfile.linux": "bash" }
     }
   },
 
