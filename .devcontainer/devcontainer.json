@@ -36,9 +36,9 @@
     "onAutoForward": "silent"
   },
 
-  "postCreateCommand": "bash setup.sh 2>&1 | tee logs/setup.log && cd scripts && npm install && cd ..",
-
-  "postStartCommand": "bash start.sh",
+  "postCreateCommand": "",
+  
+  "postStartCommand": "[ ! -f logs/setup.done ] && (mkdir -p logs && chmod +x setup.sh start.sh stop.sh && bash setup.sh 2>&1 | tee logs/setup.log && cd scripts && npm install && touch logs/setup.done); bash start.sh",
 
   "customizations": {
     "vscode": {
