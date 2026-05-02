@@ -52,14 +52,16 @@ if cfg.exists():
 #
 # CLOUDSURF_KEEPALIVE_INTERVAL seconds between keep-alive ticks (default: 90)
 #
-AUTO_LAUNCH_IDS        = [x.strip() for x in os.environ.get("CLOUDSURF_AUTO_LAUNCH", "").split(",") if x.strip()]
-AUTO_SCRIPT            = os.environ.get("CLOUDSURF_AUTO_SCRIPT", "").strip()
-AUTO_SCRIPT_DELAY      = int(os.environ.get("CLOUDSURF_SCRIPT_DELAY", "6"))
-AUTO_SCRIPT_REPEAT     = int(os.environ.get("CLOUDSURF_SCRIPT_REPEAT", "1"))   # 0 = infinite
-AUTO_SCRIPT_INTERVAL   = int(os.environ.get("CLOUDSURF_SCRIPT_INTERVAL", "60"))
-AUTO_KEEPALIVE         = os.environ.get("CLOUDSURF_KEEPALIVE", "").lower() == "true"
+AUTO_LAUNCH_IDS         = [x.strip() for x in os.environ.get("CLOUDSURF_AUTO_LAUNCH", "").split(",") if x.strip()]
+AUTO_SCRIPT             = os.environ.get("CLOUDSURF_AUTO_SCRIPT", "").strip()
+AUTO_SCRIPT_DELAY       = int(os.environ.get("CLOUDSURF_SCRIPT_DELAY", "6"))
+AUTO_SCRIPT_REPEAT      = int(os.environ.get("CLOUDSURF_SCRIPT_REPEAT", "1"))   # 0 = infinite
+AUTO_SCRIPT_INTERVAL    = int(os.environ.get("CLOUDSURF_SCRIPT_INTERVAL", "60"))
+AUTO_KEEPALIVE          = os.environ.get("CLOUDSURF_KEEPALIVE", "").lower() == "true"
 AUTO_KEEPALIVE_INTERVAL = int(os.environ.get("CLOUDSURF_KEEPALIVE_INTERVAL", "90"))
-SCRIPTS_DIR            = BASE_DIR / "scripts"
+# CLOUDSURF_NOTEBOOK is passed straight through to the JS script via os.environ
+AUTO_NOTEBOOK           = os.environ.get("CLOUDSURF_NOTEBOOK", "").strip()
+SCRIPTS_DIR             = BASE_DIR / "scripts"
 SCRIPTS_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
@@ -735,4 +737,6 @@ if __name__ == "__main__":
         log.info(f"Auto-launch enabled for: {AUTO_LAUNCH_IDS}")
     if AUTO_SCRIPT:
         log.info(f"Auto-script: {AUTO_SCRIPT} (delay {AUTO_SCRIPT_DELAY}s)")
+    if AUTO_NOTEBOOK:
+        log.info(f"Auto-notebook: {AUTO_NOTEBOOK}")
     app.run(host="0.0.0.0", port=API_PORT, debug=False, threaded=True)
