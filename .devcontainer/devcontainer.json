@@ -6,7 +6,10 @@
     "ghcr.io/devcontainers/features/python:1": {
       "version": "3.11"
     },
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
   },
 
   "forwardPorts": [7860, 6080, 6081, 6082, 6083, 6084, 6085, 6086, 6087, 6088, 6089],
@@ -33,7 +36,8 @@
     "onAutoForward": "silent"
   },
 
-  "postCreateCommand": "bash setup.sh 2>&1 | tee logs/setup.log",
+  "postCreateCommand": "bash setup.sh 2>&1 | tee logs/setup.log && cd scripts && npm install && cd ..",
+
   "postStartCommand": "bash start.sh",
 
   "customizations": {
@@ -46,6 +50,9 @@
   },
 
   "remoteEnv": {
-    "CLOUDSURF_HOST": "0.0.0.0"
+    "CLOUDSURF_HOST": "0.0.0.0",
+    "CLOUDSURF_AUTO_LAUNCH":  "${localEnv:CLOUDSURF_AUTO_LAUNCH}",
+    "CLOUDSURF_AUTO_SCRIPT":  "${localEnv:CLOUDSURF_AUTO_SCRIPT}",
+    "CLOUDSURF_SCRIPT_DELAY": "${localEnv:CLOUDSURF_SCRIPT_DELAY}"
   }
 }
