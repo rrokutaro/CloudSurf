@@ -177,6 +177,8 @@ new Promise((resolve) => {
         waitUntil: 'networkidle2',
         timeout: 60000,
       });
+
+      await page.reload({ waitUntil: "networkidle2" });
     }
 
     log(`Tab: ${page.url()}`);
