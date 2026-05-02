@@ -1,34 +1,49 @@
 #!/usr/bin/env python3
+
 """CloudSurf - Profile Manager Backend"""
 
 import os, sys, json, time, signal, shutil, subprocess, threading, logging, random
+
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-BASE_DIR     = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent
 PROFILES_DIR = BASE_DIR / "profiles"
-LOGS_DIR     = BASE_DIR / "logs"
+LOGS_DIR = BASE_DIR / "logs"
 PROFILES_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
 
-API_PORT     = 7860
-NOVNC_BASE   = 6080
-VNC_BASE     = 5900
+API_PORT = 7860
+NOVNC_BASE = 6080
+VNC_BASE = 5900
 DISPLAY_BASE = 10
-
-CHROME_BIN     = "google-chrome"
-NOVNC_PATH     = "/usr/share/novnc"
+CHROME_BIN = "google-chrome"
+NOVNC_PATH = "/usr/share/novnc"
 WEBSOCKIFY_CMD = "websockify"
 
 cfg = Path("/tmp/cloudsurf_chrome.env")
 if cfg.exists():
     for line in cfg.read_text().splitlines():
         k, _, v = line.partition("=")
-        if k == "CHROME_BIN":     CHROME_BIN     = v
-        if k == "NOVNC_PATH":     NOVNC_PATH     = v
+        if k == "CHROME_BIN": CHROME_BIN = v
+        if k == "NOVNC_PATH": NOVNC_PATH = v
         if k == "WEBSOCKIFY_CMD": WEBSOCKIFY_CMD = v
+
+# ── Auto-launch / automation env vars ────────────────────────────────────────
+# CLOUDSURF_AUTO_LAUNCH  = comma-separated profile IDs to launch on startup
+#                          e.g. "alice_12345,bob_67890"
+# CLOUDSURF_AUTO_SCRIPT  = script name (from scripts/) to run on each
+#                          auto-launched profile once Chrome is ready
+#                          e.g. "colab_run_all.js"
+# CLOUDSURF_SCRIPT_DELAY = seconds to wait after Chrome launches before
+#                          running the script (default: 6)
+AUTO_LAUNCH_IDS   = [x.strip() for x in os.environ.get("CLOUDSURF_AUTO_LAUNCH", "").split(",") if x.strip()]
+AUTO_SCRIPT       = os.environ.get("CLOUDSURF_AUTO_SCRIPT", "").strip()
+AUTO_SCRIPT_DELAY = int(os.environ.get("CLOUDSURF_SCRIPT_DELAY", "6"))
+SCRIPTS_DIR       = BASE_DIR / "scripts"
+SCRIPTS_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,10 +100,10 @@ def free_slot():
         if i not in used: return i
     raise RuntimeError("All 20 slots in use")
 
-
 def _autoforward_port(port):
     """
     Ensure NoVNC port is publicly reachable in Codespaces.
+
     Strategy 1: REST API with GITHUB_TOKEN (always available, no login needed).
     Strategy 2: gh CLI fallback.
     """
@@ -105,15 +120,15 @@ def _autoforward_port(port):
     # Strategy 1: REST API — GITHUB_TOKEN is auto-injected by Codespaces
     if gh_token:
         try:
-            url     = f"https://api.github.com/user/codespaces/{cs_name}/ports/{port}/visibility"
+            url = f"https://api.github.com/user/codespaces/{cs_name}/ports/{port}/visibility"
             payload = json.dumps({"visibility": "public"}).encode()
-            req     = urllib.request.Request(
+            req = urllib.request.Request(
                 url, data=payload, method="PATCH",
                 headers={
                     "Authorization": f"Bearer {gh_token}",
-                    "Accept": "application/vnd.github+json",
+                    "Accept":        "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "Content-Type": "application/json",
+                    "Content-Type":  "application/json",
                 }
             )
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -139,56 +154,69 @@ def _autoforward_port(port):
 def start_profile(pid):
     if pid in sessions:
         return {"status": "already_running", **sessions[pid]["info"]}
-    slot       = free_slot()
-    display    = DISPLAY_BASE + slot
-    vnc_port   = VNC_BASE  + slot
-    novnc_port = NOVNC_BASE + slot
-    pdir       = PROFILES_DIR / pid
-    pdir.mkdir(parents=True, exist_ok=True)
-    env        = {**os.environ, "DISPLAY": f":{display}"}
 
-    log.info(f"Starting {pid}: :{display} novnc={novnc_port}")
-    
+    slot = free_slot()
+    display   = DISPLAY_BASE + slot
+    vnc_port  = VNC_BASE + slot
+    novnc_port = NOVNC_BASE + slot
+    cdp_port  = 9222 + slot   # 9222–9241, one per slot
+
+    pdir = PROFILES_DIR / pid
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    env = {**os.environ, "DISPLAY": f":{display}"}
+
+    log.info(f"Starting {pid}: :{display} novnc={novnc_port} cdp={cdp_port}")
+
     # OPTIMIZATION 1: Dropped to 16-bit color (1280x900x16) to halve bandwidth
     # OPTIMIZATION 2: Added "+extension DAMAGE" so x11vnc doesn't have to poll manually
     xvfb = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", "1280x900x16", "-ac", "+extension", "DAMAGE"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1.2)
-    
+
     wm = subprocess.Popen(["openbox"], env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     # OPTIMIZATION 3: CPU-friendly x11vnc settings negotiated for cloud connections
     vnc = subprocess.Popen(["x11vnc", "-display", f":{display}", "-rfbport", str(vnc_port),
-         "-nopw", "-forever", "-shared", "-quiet",
-         "-xdamage",          # Only process pixels that actually change
-         "-wait", "20",       # Limit to ~50 FPS to stop CPU starvation
-         "-defer", "20",      # Batch updates to save network overhead
-         "-cursor", "arrow",  # Hardware/client-side cursor for instant mouse feel
-         "-tightfilexfer",    # Optimize for NoVNC/Tight encoding
-         ],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             "-nopw", "-forever", "-shared", "-quiet",
+                             "-xdamage",        # Only process pixels that actually change
+                             "-wait",  "20",    # Limit to ~50 FPS to stop CPU starvation
+                             "-defer", "20",    # Batch updates to save network overhead
+                             "-cursor", "arrow", # Hardware/client-side cursor for instant mouse feel
+                             "-tightfilexfer",  # Optimize for NoVNC/Tight encoding
+                             ],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
-    
-    ws_cmd = WEBSOCKIFY_CMD.split() +["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
+
+    ws_cmd = WEBSOCKIFY_CMD.split() + ["--web", NOVNC_PATH, str(novnc_port), f"localhost:{vnc_port}"]
     novnc = subprocess.Popen(ws_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.8)
-    
-    chrome = subprocess.Popen([CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS + ["https://colab.research.google.com/"],
+
+    chrome = subprocess.Popen(
+        [CHROME_BIN,
+         f"--user-data-dir={pdir}/chrome",
+         f"--remote-debugging-port={cdp_port}",
+         f"--remote-debugging-address=127.0.0.1"]
+        + CHROME_FLAGS
+        + ["https://colab.research.google.com/"],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     info = {"profile_id": pid, "display": f":{display}", "vnc_port": vnc_port,
-            "novnc_port": novnc_port, "started_at": datetime.now().isoformat(), "last_action": None}
+            "novnc_port": novnc_port, "cdp_port": cdp_port,
+            "started_at": datetime.now().isoformat(), "last_action": None}
+
     sessions[pid] = {"slot": slot, "xvfb": xvfb, "wm": wm, "vnc": vnc,
                      "novnc": novnc, "chrome": chrome, "info": info}
-    
+
     mf = pdir / "meta.json"
     meta = json.loads(mf.read_text()) if mf.exists() else {"id": pid, "name": pid, "created_at": datetime.now().isoformat()}
     meta["last_started"] = datetime.now().isoformat()
     save_meta(pid, meta)
-    
+
     # Auto-forward port in Codespaces/Gitpod if gh CLI available
     threading.Thread(target=_autoforward_port, args=(novnc_port,), daemon=True).start()
+
     return {"status": "started", **info}
 
 def stop_profile(pid):
@@ -204,14 +232,20 @@ def restart_chrome(pid):
     sess = sessions[pid]; pdir = PROFILES_DIR / pid
     kill_proc(sess.get("chrome")); time.sleep(1.5)
     env = {**os.environ, "DISPLAY": sess["info"]["display"]}
+    cdp_port = sess["info"].get("cdp_port", 9222)
     chrome = subprocess.Popen(
-        [CHROME_BIN, f"--user-data-dir={pdir}/chrome"] + CHROME_FLAGS,
+        [CHROME_BIN,
+         f"--user-data-dir={pdir}/chrome",
+         f"--remote-debugging-port={cdp_port}",
+         f"--remote-debugging-address=127.0.0.1"]
+        + CHROME_FLAGS,
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     sess["chrome"] = chrome
     return {"status": "restarted", "pid": chrome.pid}
 
 def keepalive_click(pid):
     """Right-click + Escape + scroll — safest keep-alive strategy.
+
     Right-click opens context menu anywhere without triggering links/buttons.
     Escape closes it immediately. Scroll provides additional activity signal.
     """
@@ -254,10 +288,10 @@ def keepalive_click(pid):
          str(y + random.randint(-6, 6))])
 
     result = {
-        "status": "ok", "x": x, "y": y,
-        "action": "rclick+esc+scroll",
-        "zone": "free",
-        "ts": datetime.now().strftime("%H:%M:%S")
+        "status":  "ok", "x": x, "y": y,
+        "action":  "rclick+esc+scroll",
+        "zone":    "free",
+        "ts":      datetime.now().strftime("%H:%M:%S")
     }
     sess["info"]["last_action"] = result
     return result
@@ -270,17 +304,133 @@ def ka_worker(pid, interval):
         tick += 1
         keepalive_click(pid)
         log.info(f"[ka] {pid} tick={tick} interval={interval}s")
+
         # Chrome watchdog every 5 ticks
         if tick % 5 == 0:
             sess = sessions.get(pid)
             if sess and sess.get("chrome") and sess["chrome"].poll() is not None:
                 log.warning(f"[watchdog] {pid} Chrome died - restarting")
                 restart_chrome(pid)
+
         # Sleep in small chunks so stopping is responsive
         slept = 0
         while slept < interval and _ka_active.get(pid):
             time.sleep(min(1, interval - slept))
             slept += 1
+
+# ── Script runner ─────────────────────────────────────────────────────────────
+
+def run_script(pid: str, script_name: str, extra_env: dict | None = None) -> dict:
+    """
+    Run a Node.js script from the scripts/ directory against a running profile.
+
+    The script receives these env vars:
+      CLOUDSURF_CDP_URL     ws://127.0.0.1:<cdp_port>  (Puppeteer connectURL)
+      CLOUDSURF_CDP_PORT    raw port number
+      CLOUDSURF_PROFILE_ID  profile id string
+      DISPLAY               the Xvfb display for this profile
+
+    Returns a dict with keys: status, stdout, stderr, returncode
+    """
+    if pid not in sessions:
+        return {"error": "profile not running"}
+
+    # Accept "colab_run_all" or "colab_run_all.js"
+    if not script_name.endswith(".js"):
+        script_name += ".js"
+
+    script_path = SCRIPTS_DIR / script_name
+    if not script_path.exists():
+        return {"error": f"script not found: {script_name}", "scripts_dir": str(SCRIPTS_DIR)}
+
+    sess  = sessions[pid]
+    info  = sess["info"]
+    cdp_p = info.get("cdp_port", 9222)
+
+    env = {
+        **os.environ,
+        "DISPLAY":              info["display"],
+        "CLOUDSURF_CDP_PORT":   str(cdp_p),
+        "CLOUDSURF_CDP_URL":    f"ws://127.0.0.1:{cdp_p}",
+        "CLOUDSURF_PROFILE_ID": pid,
+    }
+    if extra_env:
+        env.update(extra_env)
+
+    log.info(f"[script] running {script_name} for {pid} (CDP port {cdp_p})")
+    try:
+        result = subprocess.run(
+            ["node", str(script_path)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,   # 5-minute hard cap; scripts can override via their own logic
+        )
+        log.info(f"[script] {script_name} for {pid} exited rc={result.returncode}")
+        return {
+            "status":     "ok" if result.returncode == 0 else "error",
+            "script":     script_name,
+            "returncode": result.returncode,
+            "stdout":     result.stdout[-4000:],   # last 4 KB
+            "stderr":     result.stderr[-2000:],
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "script timed out (300s)"}
+    except FileNotFoundError:
+        return {"error": "node not found — run: apt install nodejs  OR  nvm install node"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _auto_launch_all():
+    """
+    Called once in a background thread after Flask binds.
+    Launches each profile listed in CLOUDSURF_AUTO_LAUNCH, then optionally
+    runs CLOUDSURF_AUTO_SCRIPT against each one.
+    """
+    if not AUTO_LAUNCH_IDS:
+        return
+
+    # Wait for Flask to fully bind before we start launching
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://127.0.0.1:7860/api/status", timeout=1)
+            break
+        except Exception:
+            continue
+
+    log.info(f"[auto-launch] profiles to launch: {AUTO_LAUNCH_IDS}")
+    # Stagger slightly so ports/displays don't race
+    for i, pid in enumerate(AUTO_LAUNCH_IDS):
+        if i > 0:
+            time.sleep(2)
+        pdir = PROFILES_DIR / pid
+        if not pdir.exists():
+            log.warning(f"[auto-launch] profile '{pid}' not found — skipping")
+            continue
+        if pid in sessions:
+            log.info(f"[auto-launch] {pid} already running — skipping launch")
+        else:
+            try:
+                r = start_profile(pid)
+                log.info(f"[auto-launch] {pid} → {r.get('status')}")
+            except Exception as e:
+                log.error(f"[auto-launch] {pid} failed: {e}")
+                continue
+
+        if AUTO_SCRIPT:
+            # Wait for Chrome to settle before connecting Puppeteer
+            log.info(f"[auto-launch] waiting {AUTO_SCRIPT_DELAY}s for Chrome ({pid}) …")
+            time.sleep(AUTO_SCRIPT_DELAY)
+            result = run_script(pid, AUTO_SCRIPT)
+            log.info(f"[auto-launch] script result for {pid}: {result.get('status')} rc={result.get('returncode')}")
+
+
+threading.Thread(target=_auto_launch_all, daemon=True).start()
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 CORS(app)
@@ -291,7 +441,6 @@ def add_headers(r):
     r.headers["X-Frame-Options"] = "ALLOWALL"
     r.headers["Access-Control-Allow-Origin"] = "*"
     return r
-
 
 @app.route("/manifest.json")
 def manifest():
@@ -329,10 +478,10 @@ def api_list(): return jsonify(load_profiles())
 
 @app.route("/api/profiles", methods=["POST"])
 def api_create():
-    d    = request.json or {}
+    d = request.json or {}
     name = d.get("name", "").strip()
     if not name: return jsonify({"error": "name required"}), 400
-    pid  = name.lower().replace(" ", "_").replace("@", "_at_")[:28] + "_" + str(int(time.time()))[-5:]
+    pid = name.lower().replace(" ", "_").replace("@", "_at_")[:28] + "_" + str(int(time.time()))[-5:]
     meta = {"id": pid, "name": name, "email": d.get("email",""),
             "notes": d.get("notes",""), "created_at": datetime.now().isoformat()}
     save_meta(pid, meta)
@@ -359,7 +508,7 @@ def api_restart_chrome(pid): return jsonify(restart_chrome(pid))
 
 @app.route("/api/profiles/<pid>/keepalive", methods=["POST"])
 def api_keepalive(pid):
-    d        = request.json or {}
+    d = request.json or {}
     action   = d.get("action", "start")
     interval = max(5, int(d.get("interval", 90)))  # allow down to 5s for testing
 
@@ -379,14 +528,41 @@ def api_keepalive(pid):
 @app.route("/api/profiles/<pid>/click", methods=["POST"])
 def api_click(pid): return jsonify(keepalive_click(pid))
 
+# ── Script routes ─────────────────────────────────────────────────────────────
+
+@app.route("/api/profiles/<pid>/run-script", methods=["POST"])
+def api_run_script(pid):
+    """
+    Run a named script against a running profile.
+
+    Body (JSON):
+      { "script": "colab_run_all" }          # .js extension optional
+
+    Returns JSON with status, stdout, stderr, returncode.
+    """
+    d = request.json or {}
+    script_name = d.get("script", "").strip()
+    if not script_name:
+        return jsonify({"error": "script name required"}), 400
+    return jsonify(run_script(pid, script_name))
+
+
+@app.route("/api/scripts", methods=["GET"])
+def api_list_scripts():
+    """List available .js scripts in the scripts/ directory."""
+    scripts = sorted(p.name for p in SCRIPTS_DIR.glob("*.js"))
+    return jsonify({"scripts": scripts, "scripts_dir": str(SCRIPTS_DIR)})
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.route("/api/profiles/<pid>/sendtext", methods=["POST"])
 def api_sendtext(pid):
     if pid not in sessions: return jsonify({"error": "not running"}), 400
     text = (request.json or {}).get("text", "")
     if not text: return jsonify({"error": "no text"}), 400
     env = {**os.environ, "DISPLAY": sessions[pid]["info"]["display"]}
-    r   = subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "30", "--", text],
-                         env=env, capture_output=True, text=True)
+    r = subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "30", "--", text],
+                       env=env, capture_output=True, text=True)
     if r.returncode != 0: return jsonify({"error": r.stderr.strip()}), 500
     return jsonify({"status": "ok", "chars": len(text)})
 
@@ -403,26 +579,31 @@ def api_download(pid):
         "ShaderCache", "GrShaderCache", "DawnWebGPUCache",
         "WidevineCdm", "CrashPad", "Crashpad",
     }
+
     # File extensions to skip
     SKIP_EXTS = {".log", ".lock", ".tmp"}
 
     buf = io.BytesIO()
     skipped = 0
-    added = 0
+    added   = 0
+
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for item in pdir.rglob("*"):
             if not item.is_file():
                 continue
-            rel = item.relative_to(pdir)
+            rel   = item.relative_to(pdir)
             parts = rel.parts
+
             # Skip if any path component is a cache dir
             if any(part in SKIP_DIRS for part in parts):
                 skipped += 1
                 continue
+
             # Skip by extension
             if item.suffix.lower() in SKIP_EXTS:
                 skipped += 1
                 continue
+
             try:
                 zf.write(item, rel)
                 added += 1
@@ -454,15 +635,15 @@ def _fetch_server_location():
         import urllib.request as ur
         with ur.urlopen("https://ipapi.co/json/", timeout=6) as r:
             d = json.loads(r.read())
-        _server_location = {"city": d.get("city") or "—", "region": d.get("region_code") or "—", "country": d.get("country_name") or "—"}
-        log.info(f"Server location: {_server_location}")
+            _server_location = {"city": d.get("city") or "—", "region": d.get("region_code") or "—", "country": d.get("country_name") or "—"}
+            log.info(f"Server location: {_server_location}")
     except Exception as e:
         log.warning(f"Location fetch 1 failed: {e}")
         try:
             import urllib.request as ur
             with ur.urlopen("http://ip-api.com/json/?fields=city,regionName,country", timeout=6) as r:
                 d = json.loads(r.read())
-            _server_location = {"city": d.get("city") or "—", "region": d.get("regionName") or "—", "country": d.get("country") or "—"}
+                _server_location = {"city": d.get("city") or "—", "region": d.get("regionName") or "—", "country": d.get("country") or "—"}
         except Exception as e2:
             log.warning(f"Location fetch 2 failed: {e2}")
 
@@ -484,4 +665,8 @@ signal.signal(signal.SIGTERM, _shutdown)
 
 if __name__ == "__main__":
     log.info(f"CloudSurf :{API_PORT} | chrome={CHROME_BIN} | novnc={NOVNC_PATH}")
+    if AUTO_LAUNCH_IDS:
+        log.info(f"Auto-launch enabled for: {AUTO_LAUNCH_IDS}")
+    if AUTO_SCRIPT:
+        log.info(f"Auto-script: {AUTO_SCRIPT} (delay {AUTO_SCRIPT_DELAY}s)")
     app.run(host="0.0.0.0", port=API_PORT, debug=False, threaded=True)
