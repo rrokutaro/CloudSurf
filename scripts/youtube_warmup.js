@@ -2,8 +2,7 @@
  * youtube_warmup.js
  *
  * Robust YouTube account warmup script using Puppeteer (CDP connection).
- * Mimics real user behavior: homepage scroll, Shorts viewing, search & watch,
- * video watching with seek/pause/play, random mouse movements, natural delays.
+ * Navigates by direct URL, uses stable selectors, dismisses all popups/dialogs.
  *
  * Env vars (optional):
  *   CLOUDSURF_CDP_PORT     CDP port (default 9222)
@@ -16,228 +15,276 @@ const CDP_PORT = process.env.CLOUDSURF_CDP_PORT || '9222';
 const PROFILE_ID = process.env.CLOUDSURF_PROFILE_ID || 'youtube-warmup';
 
 const log = (...a) => console.log(`[yt-warmup | ${PROFILE_ID}]`, ...a);
-
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const humanDelay = async (base = 800, variance = 600) => sleep(base + randomInt(0, variance));
 
-const humanDelay = async (base = 800, variance = 600) => {
-  await sleep(base + randomInt(0, variance));
-};
-
-// ── Deep DOM Helpers (YouTube uses heavy Shadow DOM) ─────────────────────
-const FN_CLICK_DEEP_BY_TEXT = `
-function clickDeepByText(word, root = document, clickAll = false) {
-  const wordLower = word.toLowerCase().trim();
-  const found = [];
-
-  function search(node) {
-    if (!node) return;
-    if (node.shadowRoot) search(node.shadowRoot);
-
-    const text = (node.textContent || '').toLowerCase();
-    const aria = node.getAttribute?.('aria-label')?.toLowerCase() || '';
-
-    if ((text.includes(wordLower) || aria.includes(wordLower))) {
-      // Prefer leaf nodes
-      const hasDirectChildMatch = Array.from(node.children || []).some(c =>
-        (c.textContent || '').toLowerCase().includes(wordLower)
-      );
-      if (!hasDirectChildMatch) found.push(node);
-    }
-
-    if (node.children) {
-      for (const child of node.children) search(child);
-    }
-  }
-
-  search(root);
-
-  if (found.length > 0) {
-    if (clickAll) {
-      found.forEach(el => { try { el.click(); } catch(e){} });
-    } else {
-      try { found[0].click(); } catch(e){}
-    }
-    return true;
-  }
-  return false;
-}
-`;
-
-// FIX: FN_FIND_DEEP is retained for potential reuse but explicitly called where needed.
-const FN_FIND_DEEP = `
-function findDeep(root, selectorOrText) {
-  if (!root) return null;
-  if (root.shadowRoot) {
-    const inShadow = findDeep(root.shadowRoot, selectorOrText);
-    if (inShadow) return inShadow;
-  }
-  if (typeof selectorOrText === 'string') {
-    if (root.matches && root.matches(selectorOrText)) return root;
-    if (root.querySelector) {
-      const found = root.querySelector(selectorOrText);
-      if (found) return found;
-    }
-  }
-  const children = root.children || [];
-  for (const child of children) {
-    const found = findDeep(child, selectorOrText);
-    if (found) return found;
-  }
-  return null;
-}
-`;
-
-// ── Mouse movement simulation ─────────────────────────────────────────────
-// FIX: Moved humanMouseMove into Node.js scope so it can actually be called.
-const humanMouseMove = async (page, targetX, targetY, steps = 25) => {
-  const startX = randomInt(100, 1100);
-  const startY = randomInt(100, 600);
+// ── Mouse movement ────────────────────────────────────────────────────────
+const humanMouseMove = async (page, targetX, targetY, steps = 20) => {
+  const startX = randomInt(200, 800);
+  const startY = randomInt(150, 500);
   for (let i = 0; i <= steps; i++) {
-    const x = startX + (targetX - startX) * (i / steps) + (Math.random() * 12 - 6);
-    const y = startY + (targetY - startY) * (i / steps) + (Math.random() * 12 - 6);
+    const x = startX + (targetX - startX) * (i / steps) + (Math.random() * 10 - 5);
+    const y = startY + (targetY - startY) * (i / steps) + (Math.random() * 10 - 5);
     await page.mouse.move(Math.floor(x), Math.floor(y));
-    await sleep(8 + Math.random() * 12);
+    await sleep(8 + Math.random() * 15);
   }
 };
 
-// ── Safe back-navigation helper ───────────────────────────────────────────
-// FIX: Awaits the fallback goto and surfaces errors cleanly instead of swallowing them.
+// ── Human typing ──────────────────────────────────────────────────────────
+const humanType = async (page, text) => {
+  for (const char of text) {
+    if (Math.random() < 0.04) {
+      await page.keyboard.type('abcdefghijklmnopqrstuvwxyz'[randomInt(0, 25)]);
+      await sleep(randomInt(80, 180));
+      await page.keyboard.press('Backspace');
+      await sleep(randomInt(60, 120));
+    }
+    await page.keyboard.type(char);
+    await sleep(randomInt(60, 180));
+  }
+};
+
+// ── Safe navigation ───────────────────────────────────────────────────────
+const goHome = async (page) => {
+  await page.goto('https://www.youtube.com', { waitUntil: 'networkidle2', timeout: 30000 });
+  await humanDelay(1200, 800);
+};
+
 const safeGoBack = async (page) => {
   try {
     await page.goBack({ waitUntil: 'networkidle2', timeout: 15000 });
-  } catch (_) {
+  } catch {
+    await goHome(page);
+  }
+};
+
+// ── Dialog / popup dismissal ──────────────────────────────────────────────
+
+// Handles native browser dialogs (alert, confirm, beforeunload, prompt)
+const setupDialogHandler = (page) => {
+  page.on('dialog', async (dialog) => {
+    log(`Browser dialog [${dialog.type()}]: "${dialog.message()}" — dismissing`);
     try {
-      await page.goto('https://www.youtube.com', { waitUntil: 'networkidle2', timeout: 30000 });
-    } catch (e) {
-      log(`safeGoBack: fallback goto also failed — ${e.message}`);
+      await dialog.dismiss();
+    } catch {
+      await dialog.accept().catch(() => {});
+    }
+  });
+};
+
+// Dismisses YouTube overlay popups: sign-in nags, survey prompts,
+// premium upsells, skip-ad buttons, session expiry modals, etc.
+const dismissYouTubePopups = async (page) => {
+  const DISMISS_SELECTORS = [
+    // Skip ad buttons
+    '.ytp-skip-ad-button',
+    '.ytp-ad-skip-button',
+    '.ytp-ad-skip-button-modern',
+    // "Dismiss" / "No thanks" / "Not now" overlays
+    'tp-yt-paper-dialog yt-button-renderer:last-child button',
+    'ytd-popup-container yt-button-renderer button',
+    // Sign-in / account picker dismiss
+    '#dismiss-button button',
+    'yt-button-shape button[aria-label*="Dismiss"]',
+    'yt-button-shape button[aria-label*="No thanks"]',
+    'yt-button-shape button[aria-label*="Skip"]',
+    // Cookie/consent re-appearance
+    'button[aria-label*="Accept"]',
+    // Survey / feedback
+    'button.yt-survey-dismiss-button',
+    // Generic modal close
+    'button.yt-icon-button[aria-label="Close"]',
+    '#close-button button',
+    // "Get the app" / "Continue in browser" prompts
+    '.yt-mealbar-promo-renderer button[aria-label*="No"]',
+    'ytd-mealbar-promo-renderer #dismiss-button button',
+  ];
+
+  let dismissed = 0;
+  for (const sel of DISMISS_SELECTORS) {
+    try {
+      const btn = await page.$(sel);
+      if (btn) {
+        const visible = await btn.isIntersectingViewport().catch(() => false);
+        if (visible) {
+          await btn.click();
+          dismissed++;
+          await sleep(350);
+        }
+      }
+    } catch {
+      // Selector didn't match, keep going
     }
   }
+
+  if (dismissed > 0) log(`Dismissed ${dismissed} overlay(s)`);
+  return dismissed;
 };
 
-// ── Login state check ─────────────────────────────────────────────────────
-// FIX: New helper — exits early with a clear message if the account is not logged in.
+const dismissAndContinue = async (page) => {
+  await dismissYouTubePopups(page);
+  await humanDelay(300, 200);
+};
+
+// ── Consent handler ───────────────────────────────────────────────────────
+const handleConsent = async (page) => {
+  try {
+    const buttons = await page.$$('button, tp-yt-paper-button');
+    for (const btn of buttons) {
+      const text = await btn.evaluate(el => el.innerText?.toLowerCase() || '');
+      if (text.includes('accept all') || text.includes('i agree') || text.includes('agree')) {
+        await btn.click();
+        log('Consent accepted');
+        await humanDelay(1200);
+        return;
+      }
+    }
+  } catch {
+    log('No consent dialog detected');
+  }
+};
+
+// ── Login check ───────────────────────────────────────────────────────────
 const assertLoggedIn = async (page) => {
+  await page.waitForSelector('ytd-app', { timeout: 15000 });
   const loggedIn = await page.evaluate(() => {
-    // Avatar button is only present for signed-in users
     return !!(
       document.querySelector('button#avatar-btn') ||
-      document.querySelector('yt-img-shadow#avatar')
+      document.querySelector('yt-img-shadow#avatar') ||
+      document.querySelector('a[href="/feed/subscriptions"]')
     );
   });
-  if (!loggedIn) {
-    throw new Error(
-      'YouTube account does not appear to be logged in. ' +
-      'Sign in first, then re-run the warmup.'
-    );
-  }
-  log('Login state verified ✓');
+  if (!loggedIn) throw new Error('Not logged in — sign in first then re-run.');
+  log('Login verified ✓');
 };
 
-// ── Shorts watcher ────────────────────────────────────────────────────────
+// ── Scroll helper ─────────────────────────────────────────────────────────
+const naturalScroll = async (page, scrolls = 5) => {
+  for (let i = 0; i < scrolls; i++) {
+    const amount = randomInt(300, 600);
+    await page.evaluate((amt) => window.scrollBy({ top: amt, behavior: 'smooth' }), amount);
+    await humanDelay(800, 1000);
+
+    if (Math.random() > 0.7) {
+      await page.evaluate(() => window.scrollBy({ top: -150, behavior: 'smooth' }));
+      await humanDelay(500, 400);
+    }
+
+    await humanMouseMove(page, randomInt(200, 1000), randomInt(150, 600));
+  }
+};
+
+// ── Click a video from the current feed ──────────────────────────────────
+// Uses stable href pattern — works regardless of YouTube's internal component names
+const clickFeedVideo = async (page, skipCount = 2) => {
+  const clicked = await page.evaluate((skip) => {
+    const links = Array.from(document.querySelectorAll('a[href*="/watch?v="]'));
+    const unique = [...new Map(links.map(l => [l.href, l])).values()];
+    if (unique.length <= skip) return false;
+    const pick = unique[skip + Math.floor(Math.random() * Math.min(5, unique.length - skip))];
+    pick.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    pick.click();
+    return true;
+  }, skipCount);
+  return clicked;
+};
+
+// ── Watch currently loaded video ──────────────────────────────────────────
+const watchCurrentVideo = async (page, minMs = 25000, maxMs = 65000) => {
+  await humanDelay(2000, 1500);
+
+  // Dismiss anything blocking the player before interacting
+  await dismissAndContinue(page);
+
+  await page.waitForSelector('video', { timeout: 20000 }).catch(() => {
+    log('  Video element not found within timeout');
+  });
+
+  // Use real video duration if available (watch 30–60% of it)
+  const watchMs = await page.evaluate((min, max) => {
+    const v = document.querySelector('video');
+    if (v && v.duration && !isNaN(v.duration) && v.duration > 0) {
+      const pct = 0.30 + Math.random() * 0.30;
+      return Math.floor(v.duration * pct * 1000);
+    }
+    return min + Math.floor(Math.random() * (max - min));
+  }, minMs, maxMs);
+
+  log(`  Watching for ~${Math.round(watchMs / 1000)}s`);
+  const deadline = Date.now() + watchMs;
+
+  while (Date.now() < deadline) {
+    await humanDelay(randomInt(4000, 9000), 0);
+
+    // Check for and dismiss any mid-video popups (e.g. skip ad)
+    await dismissYouTubePopups(page);
+
+    if (Math.random() > 0.72) await page.keyboard.press('k').catch(() => {}); // pause/play
+    if (Math.random() > 0.82) await page.keyboard.press('ArrowRight').catch(() => {}); // skip 5s
+    await humanMouseMove(page, randomInt(300, 900), randomInt(200, 500));
+  }
+};
+
+// ── Homepage browsing ─────────────────────────────────────────────────────
+const browseHomepage = async (page) => {
+  log('Browsing homepage feed...');
+  await goHome(page);
+  await dismissAndContinue(page);
+  await naturalScroll(page, randomInt(6, 10));
+};
+
+// ── Shorts ────────────────────────────────────────────────────────────────
 const watchShorts = async (page) => {
-  // FIX: Navigate directly instead of relying on sidebar text match (too fragile).
-  log('Navigating to Shorts via direct URL...');
-  await page.goto('https://www.youtube.com/shorts', {
+  log('Navigating to Shorts...');
+  await page.goto('https://www.youtube.com/shorts', { waitUntil: 'networkidle2', timeout: 30000 });
+  await humanDelay(2000, 1000);
+  await dismissAndContinue(page);
+
+  const count = randomInt(5, 9);
+  log(`Watching ${count} Shorts...`);
+
+  for (let i = 0; i < count; i++) {
+    log(`  Short ${i + 1}/${count}`);
+
+    // Dismiss anything that popped up between shorts
+    await dismissYouTubePopups(page);
+
+    if (Math.random() > 0.5) {
+      await page.keyboard.press('k').catch(() => {});
+      await humanDelay(400, 200);
+      await page.keyboard.press('k').catch(() => {});
+    }
+
+    await humanMouseMove(page, randomInt(400, 800), randomInt(300, 600));
+    await humanDelay(randomInt(3000, 6000), 0);
+
+    // ArrowDown is YouTube's native shortcut to advance to next Short
+    await page.keyboard.press('ArrowDown').catch(() => {});
+    await humanDelay(900, 600);
+  }
+};
+
+// ── Subscriptions feed ────────────────────────────────────────────────────
+const browseSubscriptions = async (page) => {
+  log('Browsing subscriptions feed...');
+  await page.goto('https://www.youtube.com/feed/subscriptions', {
     waitUntil: 'networkidle2',
     timeout: 30000,
   });
-  await humanDelay(2500, 1500);
+  await humanDelay(1500, 800);
+  await dismissAndContinue(page);
+  await naturalScroll(page, randomInt(4, 7));
 
-  log('Watching Shorts...');
-  const SHORTS_COUNT = randomInt(6, 8); // FIX: Explicit range, matches comment intent.
-  for (let s = 0; s < SHORTS_COUNT; s++) {
-    log(`Short ${s + 1}/${SHORTS_COUNT}`);
-
-    if (Math.random() > 0.4) {
-      await page.keyboard.press('k').catch(() => {}); // toggle play/pause
-      await humanDelay(300, 200);
-      await page.keyboard.press('k').catch(() => {}); // resume
-    }
-
-    if (Math.random() > 0.65) {
-      await page.keyboard.press('ArrowRight').catch(() => {});
-      await humanDelay(300);
-    }
-
-    await humanDelay(2800, 3200);
-
-    // Advance to next Short
-    await page.keyboard.press('ArrowDown').catch(() => {});
-    await page.evaluate(() => window.scrollBy(0, randomInt ? randomInt(280, 380) : 320));
-    await humanDelay(800, 1200);
+  const clicked = await clickFeedVideo(page, 0);
+  if (clicked) {
+    await watchCurrentVideo(page, 20000, 50000);
+    await safeGoBack(page);
+    await dismissAndContinue(page);
   }
 };
 
-// ── Regular video watcher ─────────────────────────────────────────────────
-const watchVideos = async (page) => {
-  const VIDEO_COUNT = 3;
-
-  for (let v = 0; v < VIDEO_COUNT; v++) {
-    log(`Watching video ${v + 1}/${VIDEO_COUNT}...`);
-    try {
-      // FIX: scrollIntoView + click are split — click happens in Node after a proper await.
-      const clicked = await page.evaluate(() => {
-        const videos = document.querySelectorAll(
-          'ytd-rich-item-renderer a#thumbnail, ytd-video-renderer a#thumbnail'
-        );
-        if (videos.length <= 2) return false;
-        const randomVid = videos[Math.floor(Math.random() * (videos.length - 2)) + 2];
-        randomVid.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return true;
-      });
-
-      if (!clicked) {
-        log(`Video ${v + 1}: no thumbnails found, skipping`);
-        continue;
-      }
-
-      // Let scroll animation settle, then click
-      await humanDelay(900, 400);
-      await page.evaluate(() => {
-        const videos = document.querySelectorAll(
-          'ytd-rich-item-renderer a#thumbnail, ytd-video-renderer a#thumbnail'
-        );
-        if (videos.length > 2) {
-          videos[Math.floor(Math.random() * (videos.length - 2)) + 2].click();
-        }
-      });
-
-      await humanDelay(3000, 2000);
-
-      // FIX: Increased timeout from 8s → 20s for reliability on slower connections.
-      await page.waitForSelector('video', { timeout: 20000 }).catch(() => {
-        log(`Video ${v + 1}: player did not appear within timeout`);
-      });
-
-      // FIX: Use Date.now() deadline instead of accumulating a step variable.
-      const watchTime = randomInt(25000, 65000);
-      log(`  Watching for ~${Math.round(watchTime / 1000)}s`);
-      const deadline = Date.now() + watchTime;
-
-      while (Date.now() < deadline) {
-        const step = randomInt(4000, 9000);
-        await humanDelay(step, 0);
-
-        if (Math.random() > 0.7) await page.keyboard.press('k').catch(() => {});
-        if (Math.random() > 0.8) await page.keyboard.press('ArrowRight').catch(() => {});
-
-        // FIX: Use the real humanMouseMove helper now that it's in Node scope.
-        await humanMouseMove(page, randomInt(300, 900), randomInt(200, 500));
-      }
-
-      await safeGoBack(page);
-      await humanDelay(1500);
-    } catch (e) {
-      log(`Video ${v + 1} error: ${e.message}`);
-      await safeGoBack(page);
-    }
-  }
-};
-
-// ── Search query pool ─────────────────────────────────────────────────────
-// Broad, evergreen topics — nothing niche that looks bot-like on a fresh account.
+// ── Search queries ────────────────────────────────────────────────────────
 const SEARCH_QUERIES = [
   'how to make pasta carbonara',
   'best hiking trails for beginners',
@@ -245,244 +292,143 @@ const SEARCH_QUERIES = [
   'how does a car engine work',
   'beginner guitar lessons',
   'home workout no equipment',
-  'documentary nature 2024',
+  'nature documentary 2024',
   'funny cat compilation',
   'how to learn a new language fast',
   'space exploration news',
   'easy meal prep ideas',
   'mindfulness meditation for sleep',
   'history of ancient rome',
-  'how to fix a leaky tap',
+  'how to fix a leaky faucet',
   'street food around the world',
   'chess for beginners tutorial',
   'diy home decoration ideas',
-  'best road trips in europe',
-  'how to start investing',
+  'best road trips europe',
+  'how to start investing basics',
   'wildlife photography tips',
 ];
 
-const pickSearchQueries = (count = 2) => {
-  const shuffled = [...SEARCH_QUERIES].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, count);
-};
-
-// ── Human-like typing ─────────────────────────────────────────────────────
-// Types character-by-character with realistic inter-key delays and occasional typo+backspace.
-const humanType = async (page, text) => {
-  for (let i = 0; i < text.length; i++) {
-    // Occasional typo: insert a wrong char then backspace (~4% chance)
-    if (Math.random() < 0.04 && i < text.length - 1) {
-      const wrongChars = 'abcdefghijklmnopqrstuvwxyz';
-      const typo = wrongChars[randomInt(0, wrongChars.length - 1)];
-      await page.keyboard.type(typo);
-      await sleep(randomInt(80, 180));
-      await page.keyboard.press('Backspace');
-      await sleep(randomInt(60, 140));
-    }
-    await page.keyboard.type(text[i]);
-    await sleep(randomInt(60, 180)); // 60–180ms per keystroke
-  }
-};
-
-// ── Search and watch ──────────────────────────────────────────────────────
-// Performs a search, scrolls results, clicks a video, watches a percentage of it.
+// ── Search & watch ────────────────────────────────────────────────────────
 const searchAndWatch = async (page, query) => {
-  log(`Searching for: "${query}"`);
+  log(`Searching: "${query}"`);
 
-  // Navigate to YouTube home first if not already there
-  if (!page.url().includes('youtube.com')) {
-    await page.goto('https://www.youtube.com', { waitUntil: 'networkidle2', timeout: 30000 });
-    await humanDelay(1200);
-  }
-
-  // Click the search box
-  try {
-    await page.waitForSelector('input#search', { timeout: 8000 });
-  } catch (_) {
-    log('Search input not found, skipping this query');
-    return;
-  }
-
-  await humanMouseMove(page, randomInt(400, 700), randomInt(50, 90));
-  await page.click('input#search');
-  await humanDelay(400, 300);
-
-  // Clear any existing text
-  await page.evaluate(() => {
-    const input = document.querySelector('input#search');
-    if (input) input.value = '';
+  // Navigate via URL — far more reliable than clicking the search box
+  const encoded = encodeURIComponent(query);
+  await page.goto(`https://www.youtube.com/results?search_query=${encoded}`, {
+    waitUntil: 'networkidle2',
+    timeout: 30000,
   });
+  await humanDelay(2000, 1000);
+  await dismissAndContinue(page);
 
-  // Type query naturally
-  await humanType(page, query);
-  await humanDelay(500, 400);
+  // Scroll results to simulate scanning
+  await naturalScroll(page, randomInt(2, 4));
 
-  // Submit
-  await page.keyboard.press('Enter');
-  await humanDelay(2500, 1500);
-
-  // Scroll results page to look like the user is scanning
-  log('Scanning search results...');
-  for (let i = 0; i < randomInt(2, 4); i++) {
-    await page.evaluate((amount) => window.scrollBy(0, amount), randomInt(250, 450));
-    await humanDelay(700, 800);
-  }
-
-  // Pick a result — skip index 0 (often an ad or promoted), pick from 1–5
-  const clicked = await page.evaluate(() => {
-    const results = document.querySelectorAll('ytd-video-renderer a#thumbnail');
-    if (results.length < 2) return false;
-    const pick = results[randomInt ? randomInt(1, Math.min(4, results.length - 1)) : 1];
-    pick.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    return true;
-  });
-
+  // Skip index 0 (often a promoted/ad result)
+  const clicked = await clickFeedVideo(page, 1);
   if (!clicked) {
-    log('No search results found to click, skipping');
+    log('  No results found, skipping');
     return;
   }
 
-  await humanDelay(900, 500);
-
-  // Click the chosen result
-  await page.evaluate(() => {
-    const results = document.querySelectorAll('ytd-video-renderer a#thumbnail');
-    if (results.length >= 2) {
-      const pick = results[Math.floor(Math.random() * Math.min(4, results.length - 1)) + 1];
-      pick.click();
-    }
-  });
-
-  await humanDelay(3000, 2000);
-  await page.waitForSelector('video', { timeout: 20000 }).catch(() => {
-    log('Video player did not appear for search result');
-  });
-
-  // Watch 30–60% of the video's actual duration for natural drop-off behaviour
-  const watchTime = await page.evaluate(() => {
-    const video = document.querySelector('video');
-    if (!video || !video.duration || isNaN(video.duration)) return null;
-    const pct = 0.30 + Math.random() * 0.30; // 30–60%
-    return Math.floor(video.duration * pct * 1000); // ms
-  });
-
-  // Fallback to a fixed range if duration isn't readable yet
-  const actualWatchTime = watchTime || randomInt(30000, 70000);
-  log(`  Watching search result for ~${Math.round(actualWatchTime / 1000)}s`);
-
-  const deadline = Date.now() + actualWatchTime;
-  while (Date.now() < deadline) {
-    const step = randomInt(4000, 9000);
-    await humanDelay(step, 0);
-    if (Math.random() > 0.7) await page.keyboard.press('k').catch(() => {});
-    if (Math.random() > 0.8) await page.keyboard.press('ArrowRight').catch(() => {});
-    await humanMouseMove(page, randomInt(300, 900), randomInt(200, 500));
-  }
-
+  await watchCurrentVideo(page, 25000, 70000);
   await safeGoBack(page);
-  await humanDelay(1200, 800);
+  await dismissAndContinue(page);
+  await humanDelay(1000, 800);
 };
 
-// ── Main warmup orchestrator ──────────────────────────────────────────────
+// ── Homepage video watch ──────────────────────────────────────────────────
+const watchHomepageVideos = async (page) => {
+  const count = randomInt(2, 3);
+  log(`Watching ${count} homepage videos...`);
+
+  await goHome(page);
+  await dismissAndContinue(page);
+  await naturalScroll(page, 3);
+
+  for (let i = 0; i < count; i++) {
+    log(`  Homepage video ${i + 1}/${count}`);
+    try {
+      const clicked = await clickFeedVideo(page, 2);
+      if (!clicked) {
+        log('  No thumbnails found, skipping');
+        continue;
+      }
+      await watchCurrentVideo(page);
+      await safeGoBack(page);
+      await dismissAndContinue(page);
+      await humanDelay(1500, 1000);
+      await naturalScroll(page, randomInt(2, 4));
+    } catch (e) {
+      log(`  Error: ${e.message}`);
+      await goHome(page);
+    }
+  }
+};
+
+// ── Main orchestrator ─────────────────────────────────────────────────────
 const warmupScript = async (page) => {
-  log('Starting YouTube warmup sequence...');
+  log('Starting warmup sequence...');
 
-  page.on('dialog', async (dialog) => {
-    log(`Dialog: ${dialog.message()} — accepting`);
-    await dialog.accept().catch(() => {});
-  });
+  // Set up native browser dialog handler first — before any navigation
+  setupDialogHandler(page);
 
-  // Navigate to homepage
-  log('Navigating to YouTube...');
-  await page.goto('https://www.youtube.com', {
-    waitUntil: 'networkidle2',
-    timeout: 45000,
-  });
-
-  await humanDelay(1500, 1000);
-
-  // Accept cookies if present
-  log('Handling consent...');
-  try {
-    const consentClicked = await page.evaluate(`
-      (${FN_CLICK_DEEP_BY_TEXT})
-      clickDeepByText('accept all') || clickDeepByText('i agree') || clickDeepByText('agree');
-    `);
-    if (consentClicked) {
-      log('Consent accepted');
-      await humanDelay(1200);
-    }
-  } catch (_) {
-    log('No consent dialog or already handled');
-  }
-
-  // FIX: Assert login before doing anything meaningful.
+  // 1. Homepage
+  log('Step 1: Homepage');
+  await page.goto('https://www.youtube.com', { waitUntil: 'networkidle2', timeout: 45000 });
+  await humanDelay(1500, 800);
+  await handleConsent(page);
+  await dismissAndContinue(page);
   await assertLoggedIn(page);
+  await browseHomepage(page);
 
-  // Realistic mouse movements across the page
-  log('Simulating mouse activity...');
-  for (let i = 0; i < 6; i++) {
-    const tx = randomInt(100, 1200);
-    const ty = randomInt(100, 700);
-    // FIX: Removed unused (tx, ty) args that were passed into evaluate but ignored.
-    await page.evaluate(() => window.scrollBy(0, randomInt ? 0 : 0)); // no-op, just context check
-    await humanMouseMove(page, tx, ty);
-    await humanDelay(400, 600);
-  }
-
-  // Scroll homepage feed naturally
-  log('Scrolling homepage feed...');
-  for (let i = 0; i < 8; i++) {
-    // FIX: Use randomInt consistently instead of raw Math.random expressions.
-    await page.evaluate((amount) => window.scrollBy(0, amount), randomInt(300, 700));
-    await humanDelay(900, 1100);
-
-    if (i % 3 === 0) {
-      await page.evaluate(() => window.scrollBy(0, -180));
-      await humanDelay(600);
-    }
-  }
-
-  // Watch Shorts
+  // 2. Shorts
+  log('Step 2: Shorts');
   try {
     await watchShorts(page);
   } catch (e) {
-    log(`Shorts section failed, continuing — ${e.message}`);
-    // Return to homepage before video section
-    await page.goto('https://www.youtube.com', { waitUntil: 'networkidle2', timeout: 30000 })
-      .catch(() => {});
+    log(`Shorts failed: ${e.message} — continuing`);
+    await goHome(page).catch(() => {});
   }
 
-  // ── Idle gap (simulates user getting distracted between sections) ─────────
-  const idleTime = randomInt(30000, 60000);
-  log(`Idle pause for ~${Math.round(idleTime / 1000)}s...`);
-  await sleep(idleTime);
+  // 3. Idle gap (simulates user getting distracted between sessions)
+  const idleMs = randomInt(20000, 45000);
+  log(`Step 3: Idle for ~${Math.round(idleMs / 1000)}s`);
+  await sleep(idleMs);
 
-  // ── Search section ────────────────────────────────────────────────────────
-  log('Starting search section...');
-  const queries = pickSearchQueries(randomInt(2, 3));
-  for (const query of queries) {
+  // 4. Subscriptions
+  log('Step 4: Subscriptions');
+  try {
+    await browseSubscriptions(page);
+  } catch (e) {
+    log(`Subscriptions failed: ${e.message} — continuing`);
+    await goHome(page).catch(() => {});
+  }
+
+  // 5. Search & watch
+  log('Step 5: Search & watch');
+  const queries = [...SEARCH_QUERIES].sort(() => Math.random() - 0.5).slice(0, randomInt(2, 3));
+  for (const q of queries) {
     try {
-      await searchAndWatch(page, query);
-      // Brief idle between searches
-      await sleep(randomInt(8000, 18000));
+      await searchAndWatch(page, q);
+      await sleep(randomInt(8000, 15000));
     } catch (e) {
-      log(`Search error for "${query}": ${e.message}`);
-      await page.goto('https://www.youtube.com', { waitUntil: 'networkidle2', timeout: 30000 })
-        .catch(() => {});
+      log(`Search error: ${e.message}`);
+      await goHome(page).catch(() => {});
     }
   }
 
-  // ── Watch regular videos from feed ────────────────────────────────────────
-  log('Watching regular videos...');
-  await watchVideos(page);
+  // 6. Homepage videos
+  log('Step 6: Homepage videos');
+  await watchHomepageVideos(page);
 
-  // Final scroll
-  log('Final feed interactions...');
-  await page.evaluate(() => window.scrollTo(0, 400));
-  await humanDelay(1200);
+  // 7. Final scroll
+  log('Step 7: Final feed scroll');
+  await goHome(page);
+  await dismissAndContinue(page);
+  await naturalScroll(page, randomInt(3, 5));
 
-  log('YouTube warmup completed successfully.');
+  log('Warmup complete ✓');
 };
 
 // ── Entry point ───────────────────────────────────────────────────────────
@@ -497,10 +443,7 @@ const warmupScript = async (page) => {
 
     const pages = await browser.pages();
     let page = pages.find(p => p.url().includes('youtube.com')) || pages[0];
-
-    if (!page) {
-      page = await browser.newPage();
-    }
+    if (!page) page = await browser.newPage();
 
     await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent(
@@ -513,8 +456,6 @@ const warmupScript = async (page) => {
     console.error(`[yt-warmup | ${PROFILE_ID}] Fatal:`, err.message);
     process.exit(1);
   } finally {
-    if (browser) {
-      try { await browser.disconnect(); } catch (_) {}
-    }
+    if (browser) await browser.disconnect().catch(() => {});
   }
 })();
