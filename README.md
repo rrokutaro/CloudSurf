@@ -1,8 +1,8 @@
 # CloudSurf
 
-Run multiple isolated Chrome browser profiles in the cloud — accessible from any device, always on, with automatic keep-alive and Puppeteer automation.
+Run multiple isolated Chrome browser profiles in the cloud — accessible from any device, always on, with automatic keep-alive.
 
-[![Banner](https://github.com/rrokutaro/CloudSurf/raw/main/banner.png)](banner.png)
+![Banner](https://github.com/rrokutaro/CloudSurf/raw/main/banner.png)
 
 ## Use Cases
 
@@ -59,19 +59,90 @@ Run multiple isolated Chrome browser profiles in the cloud — accessible from a
 * Choose a **4-core** machine for best results (free tier: 2-core works for 3–4 profiles)
 * Pick a **US East** region for best Colab GPU availability
 
-Everything else is automatic — setup, dependency install, and manager start all happen on boot via `devcontainer.json`.
+### 2. Setup
 
-### 2. Open the UI
+Runs automatically on first launch via `devcontainer.json`. To run manually:
+
+```
+bash setup.sh
+```
+
+### 3. Start CloudSurf
+
+```
+bash start.sh
+```
+
+### 4. Open the UI
 
 * Go to the **Ports** tab in VS Code
 * Port **7860** → click the globe icon
 * Ports **6080–6089** are forwarded automatically when profiles launch
 
-### 3. Manual start (if needed)
+---
 
-```bash
-bash setup.sh   # install dependencies (runs automatically on first boot)
-bash start.sh   # start the manager
+## Deployment (Google Cloud Run)
+
+CloudSurf can be deployed to Cloud Run for reliable, always-available hosting without GitHub Actions timing issues.
+
+Set the following environment variables on your Cloud Run service:
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `MONGODB_URI` | MongoDB Atlas connection string (`mongodb+srv://...`) | — |
+| `CLOUDSURF_BUDGET_HOURS` | Max hours CloudSurf runs before auto-shutdown | `7` |
+| `CLOUDSURF_INSTANCE_ID` | Unique name for this instance in the database | `default` |
+
+`MONGODB_URI` is required to enable the runtime budget. Without it, CloudSurf runs indefinitely with no auto-shutdown.
+
+---
+
+## Runtime Budget
+
+CloudSurf uses MongoDB Atlas to track how long it has been running and automatically shut itself down once the daily budget is reached. This prevents wasted compute when running on always-on infrastructure like Cloud Run.
+
+**How it works:**
+
+On startup, CloudSurf checks the database for an existing session:
+
+* **No session found** → starts fresh, full budget available
+* **Session found, last heartbeat < 24h ago, within budget** → resumes from where it left off (e.g. if 2h were used before a restart, 2h are still counted)
+* **Session found, last heartbeat < 24h ago, budget exceeded** → refuses to start and exits immediately
+* **Session found, last heartbeat ≥ 24h ago** → treats the old session as stale (instance was dead long enough that it counts as a new day), resets and starts fresh with a full budget
+
+Once running, a background thread writes a heartbeat to the database every 60 seconds and checks elapsed time. When `elapsed >= budget_hours`, all profiles are stopped and the process exits cleanly.
+
+**Session document shape** (MongoDB collection: `cloudsurf.sessions`):
+
+```json
+{
+  "instance_id":    "default",
+  "started_at":     "2026-05-10T06:00:00Z",
+  "last_heartbeat": "2026-05-10T08:34:00Z",
+  "budget_hours":   7,
+  "status":         "running",
+  "stopped_at":     null
+}
+```
+
+Possible `status` values: `running`, `stopped`, `budget_exceeded`, `stale`.
+
+**Budget API endpoint:**
+
+```
+GET /api/budget
+```
+
+```json
+{
+  "enabled": true,
+  "instance_id": "default",
+  "started_at": "2026-05-10T06:00:00Z",
+  "elapsed_hours": 3.42,
+  "budget_hours": 7,
+  "remaining_hours": 3.58,
+  "status": "running"
+}
 ```
 
 ---
@@ -101,8 +172,6 @@ Prevents idle timeouts by simulating human activity (right-click + scroll) at a 
 
 The activity log shows each event with timestamp and coordinates.
 
-Keep-alive can also run automatically on startup — see [Automation & Secrets](#automation--secrets) below.
-
 ### Downloading a profile
 
 Click the **↓** button next to any profile in the sidebar to download its Chrome data as a `.zip`. This includes cookies, localStorage, session tokens, and login state — everything needed to restore the session elsewhere. Cache directories are excluded to keep the file small.
@@ -110,118 +179,6 @@ Click the **↓** button next to any profile in the sidebar to download its Chro
 ### Paste text
 
 With a profile running, click **⊕ Paste Text** to inject text directly into the browser as keystrokes — useful for entering credentials without typing manually.
-
----
-
-## Automation & Secrets
-
-CloudSurf supports fully hands-free operation via Codespace secrets. Set these once and every Codespace you spin up will auto-launch profiles, open notebooks, run scripts, and keep sessions alive — no manual steps.
-
-### Where to set secrets
-
-**GitHub.com → Settings → Codespaces → Codespace secrets**
-
-Make sure to grant each secret access to your CloudSurf repo.
-
-### Finding your profile IDs
-
-Profile IDs are the folder names inside `profiles/` — they look like `alice_12345`. You can also see them in the UI sidebar or in `profiles/<id>/meta.json`.
-
----
-
-### Secret Reference
-
-#### Auto-launch
-
-| Secret | Default | Description |
-|---|---|---|
-| `CLOUDSURF_AUTO_LAUNCH` | *(unset = off)* | Comma-separated profile IDs to launch automatically when the Codespace starts. e.g. `alice_12345,bob_67890` |
-
-#### Automation script
-
-| Secret | Default | Description |
-|---|---|---|
-| `CLOUDSURF_AUTO_SCRIPT` | *(unset = off)* | Script filename (without `.js`) from the `scripts/` folder to run against each auto-launched profile. e.g. `colab_run_all` |
-| `CLOUDSURF_NOTEBOOK` | *(unset = skip)* | Notebook name to click in the Colab file picker, e.g. `myproject.ipynb`. The script finds it by text in the picker, handles any "leave page" browser dialog, waits for the notebook to load, then runs it. Leave unset to skip straight to Run all (if notebook is already open). |
-| `CLOUDSURF_SCRIPT_DELAY` | `6` | Seconds to wait after Chrome launches before running the script the first time. Gives Chrome time to load Colab before Puppeteer connects. |
-| `CLOUDSURF_SCRIPT_REPEAT` | `1` | How many times to run the script per profile. `1` = run once. `0` = run forever until the profile stops. Any other number = run that many times. |
-| `CLOUDSURF_SCRIPT_INTERVAL` | `60` | Seconds to wait between repeated script runs. Only relevant when `CLOUDSURF_SCRIPT_REPEAT` is `0` or greater than `1`. |
-
-#### Keep-alive
-
-| Secret | Default | Description |
-|---|---|---|
-| `CLOUDSURF_KEEPALIVE` | `false` | Set to `true` to automatically start keep-alive for every auto-launched profile. Simulates human activity (right-click + scroll) to prevent idle disconnects. |
-| `CLOUDSURF_KEEPALIVE_INTERVAL` | `90` | Seconds between keep-alive ticks. `10`–`30` is aggressive. `60`–`90` is lighter. |
-
----
-
-### Example Configurations
-
-**Run a Colab notebook once on startup, keep session alive:**
-```
-CLOUDSURF_AUTO_LAUNCH      = alice_12345
-CLOUDSURF_AUTO_SCRIPT      = colab_run_all
-CLOUDSURF_NOTEBOOK         = myproject.ipynb
-CLOUDSURF_SCRIPT_DELAY     = 8
-CLOUDSURF_KEEPALIVE        = true
-CLOUDSURF_KEEPALIVE_INTERVAL = 90
-```
-
-**Run across 3 accounts, re-run the notebook every 5 minutes indefinitely:**
-```
-CLOUDSURF_AUTO_LAUNCH      = alice_12345,bob_67890,carol_11111
-CLOUDSURF_AUTO_SCRIPT      = colab_run_all
-CLOUDSURF_NOTEBOOK         = myproject.ipynb
-CLOUDSURF_SCRIPT_DELAY     = 8
-CLOUDSURF_SCRIPT_REPEAT    = 0
-CLOUDSURF_SCRIPT_INTERVAL  = 300
-CLOUDSURF_KEEPALIVE        = true
-CLOUDSURF_KEEPALIVE_INTERVAL = 90
-```
-
-**Just auto-launch profiles with keep-alive, no scripting:**
-```
-CLOUDSURF_AUTO_LAUNCH      = alice_12345,bob_67890
-CLOUDSURF_KEEPALIVE        = true
-```
-
----
-
-### Writing Custom Scripts
-
-Drop any `.js` file into the `scripts/` folder. CloudSurf injects these environment variables automatically when running a script:
-
-| Variable | Description |
-|---|---|
-| `CLOUDSURF_CDP_PORT` | Chrome DevTools Protocol port for this profile (e.g. `9222`) |
-| `CLOUDSURF_CDP_URL` | Full WebSocket URL for Puppeteer, e.g. `ws://127.0.0.1:9222` |
-| `CLOUDSURF_PROFILE_ID` | The profile ID string |
-| `DISPLAY` | The Xvfb display for this profile |
-| All Codespace secrets | Including `CLOUDSURF_NOTEBOOK` and any others you've set |
-
-Connect Puppeteer like this:
-
-```js
-const puppeteer = require('puppeteer-core');
-const browser = await puppeteer.connect({
-  browserURL: `http://127.0.0.1:${process.env.CLOUDSURF_CDP_PORT}`,
-  defaultViewport: null,
-});
-// ... your automation ...
-await browser.disconnect(); // never .close() — you don't own the browser
-```
-
-Run a script manually via the API:
-
-```bash
-curl -X POST http://localhost:7860/api/profiles/<profile_id>/run-script \
-     -H "Content-Type: application/json" \
-     -d '{"script": "colab_run_all"}'
-
-# List available scripts
-curl http://localhost:7860/api/scripts
-```
 
 ---
 
@@ -238,24 +195,22 @@ CloudSurf is designed to work fully on mobile:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│               GitHub Codespace                  │
-│                                                 │
-│  Flask Manager  :7860  (CloudSurf UI + API)     │
-│                                                 │
-│  Per profile:                                   │
-│    Xvfb :{10+n}          virtual display        │
-│    x11vnc :{5900+n}      VNC server             │
-│    websockify :{6080+n}  NoVNC in browser       │
-│    Chrome  --user-data-dir=profiles/{id}        │
-│            --remote-debugging-port={9222+n}     │
-│                                                 │
-│  Keep-alive thread  →  xdotool                  │
-│  Script runner      →  Node.js + puppeteer-core │
-│  Port auto-forward  →  GitHub REST API          │
-│  Codespace keep-alive → ping every 4 min        │
-└─────────────────────────────────────────────────┘
-             ↑ access from any browser
+┌──────────────────────────────────────────────┐
+│           Cloud Run / Codespace              │
+│                                              │
+│  Flask Manager  :7860  (CloudSurf UI + API)  │
+│                                              │
+│  Per profile:                                │
+│    Xvfb :{10+n}        virtual display       │
+│    x11vnc :{5900+n}    VNC server            │
+│    websockify :{6080+n} → NoVNC in browser   │
+│    Chrome  --user-data-dir=profiles/{id}     │
+│                                              │
+│  Keep-alive thread  →  xdotool               │
+│  Budget thread      →  MongoDB Atlas         │
+│  Port auto-forward  →  GitHub REST API       │
+└──────────────────────────────────────────────┘
+            ↑ access from any browser
 ```
 
 ---
@@ -263,7 +218,7 @@ CloudSurf is designed to work fully on mobile:
 ## Resource Guide
 
 | Machine | RAM | Profiles | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 2-core | 8 GB | 3–4 | GitHub free tier |
 | 4-core | 16 GB | 6–8 | Recommended |
 | 8-core | 32 GB | 12–15 | Maximum throughput |
@@ -275,11 +230,10 @@ GitHub free tier: **120 core-hours / month** = 60h on 2-core, 30h on 4-core.
 ## Ports Reference
 
 | Port | Service |
-|---|---|
+| --- | --- |
 | 7860 | CloudSurf UI + API |
 | 6080–6089 | NoVNC — one per profile slot |
 | 5900–5909 | Raw VNC — internal only, do not expose |
-| 9222–9241 | Chrome CDP — internal only, used by scripts |
 
 ---
 
@@ -288,29 +242,24 @@ GitHub free tier: **120 core-hours / month** = 60h on 2-core, 30h on 4-core.
 ```
 cloudsurf/
 ├── setup.sh              # install dependencies
-├── start.sh              # start manager + keep-alive watchdog
+├── start.sh              # start manager
 ├── stop.sh               # stop everything
-├── manager.py            # Flask API + process manager + automation
+├── manager.py            # Flask API + process manager + runtime budget
 ├── gdrive_sync.py        # Google Drive profile backup/restore
 ├── index.html            # single-file web UI
 ├── profiles/             # Chrome user data + metadata per profile
-├── logs/                 # manager + keepalive logs
-├── scripts/              # Puppeteer automation scripts
-│   ├── colab_run_all.js  # open a notebook and click Run all
-│   ├── example_navigate.js # template for custom scripts
-│   └── package.json      # puppeteer-core dependency
+├── logs/                 # manager logs
 └── .devcontainer/
-    └── devcontainer.json # Codespaces config — auto-setup, secrets, port forwarding
+    └── devcontainer.json # Codespaces config — auto-setup + port forwarding
 ```
 
 ---
 
 ## Tips
 
-* **Profile data persists** between Codespace sessions — logins survive restarts as long as you don't delete the Codespace
+* **Profile data persists** between sessions — logins survive restarts as long as the profiles directory is not deleted
 * **Don't exceed RAM** — Chrome uses ~1–1.5 GB per profile; going over causes silent crashes
-* **Keep-Alive interval** — 10s is aggressive but reliable; raise to 60–90s for lighter activity signals
+* **Keep-Alive interval** — 10s is aggressive but reliable; raise to 30–60s for lighter activity signals
 * **Backup before stopping** — use the **↓** download button per profile, or run `python3 gdrive_sync.py backup` for bulk export
 * **VNC performance** — x11vnc is tuned for low latency; NoVNC runs at max quality with no compression
-* **Script logs** — check `logs/manager.log` to see script run results, repeat counts, and any errors
-* **Updating** — pull new changes in an existing Codespace with `git pull && bash stop.sh && bash start.sh`
+* **Budget resets daily** — if the instance has been dead for 24+ hours, the budget resets automatically on next startup
