@@ -64,12 +64,289 @@ AUTO_NOTEBOOK           = os.environ.get("CLOUDSURF_NOTEBOOK", "").strip()
 SCRIPTS_DIR             = BASE_DIR / "scripts"
 SCRIPTS_DIR.mkdir(exist_ok=True)
 
+# ── Daily budget / Atlas session tracking ─────────────────────────────────────
+#
+# CLOUDSURF_MONGO_URI         MongoDB Atlas connection string (required for budget)
+#                              e.g. "mongodb+srv://user:pass@cluster.mongodb.net/cloudsurf"
+#
+# CLOUDSURF_DAILY_BUDGET_HOURS  How many hours per 24-hour window this instance
+#                              may run (default: 0 = unlimited / feature disabled)
+#                              e.g. "7" → 7 hours per day
+#
+# CLOUDSURF_INSTANCE_NAME     Unique name for this instance so multiple Codespaces
+#                              can share the same Atlas DB without colliding
+#                              (default: hostname)
+#                              e.g. "colab-worker-1"
+#
+MONGO_URI            = os.environ.get("CLOUDSURF_MONGO_URI", "").strip()
+DAILY_BUDGET_HOURS   = float(os.environ.get("CLOUDSURF_DAILY_BUDGET_HOURS", "0"))
+DAILY_BUDGET_SECONDS = DAILY_BUDGET_HOURS * 3600
+INSTANCE_NAME        = os.environ.get("CLOUDSURF_INSTANCE_NAME", "").strip() or \
+                       os.environ.get("CODESPACE_NAME", "").strip() or \
+                       __import__("socket").gethostname()
+BUDGET_ENABLED       = bool(MONGO_URI and DAILY_BUDGET_HOURS > 0)
+HEARTBEAT_INTERVAL   = 60   # seconds between Atlas heartbeat writes
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(), logging.FileHandler(LOGS_DIR / "manager.log")]
 )
 log = logging.getLogger("cloudsurf")
+
+# ── Budget tracker ─────────────────────────────────────────────────────────────
+
+class BudgetTracker:
+    """
+    Tracks cumulative runtime against a daily budget stored in MongoDB Atlas.
+
+    Schema (collection: cloudsurf_sessions, one doc per instance):
+    {
+        "_id":          "<instance_name>",
+        "window_start": <ISODate — start of the current 24-hour window>,
+        "used_seconds": <float — seconds consumed in this window>,
+        "last_heartbeat": <ISODate — last time this instance wrote>,
+        "last_session_start": <ISODate — when the current run started>,
+    }
+    """
+
+    def __init__(self):
+        self._col      = None   # pymongo Collection, set in connect()
+        self._start_ts = None   # float — time.time() when this run started
+        self._stop_evt = threading.Event()
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _connect(self):
+        """Lazy-connect to Atlas. Returns True on success."""
+        if self._col is not None:
+            return True
+        try:
+            from pymongo import MongoClient
+            client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=8000)
+            db = client.get_default_database(default="cloudsurf")
+            self._col = db["cloudsurf_sessions"]
+            return True
+        except Exception as e:
+            log.error(f"[budget] Atlas connect failed: {e}")
+            return False
+
+    def _now_iso(self):
+        return datetime.utcnow().isoformat() + "Z"
+
+    def _elapsed_this_run(self):
+        """Seconds elapsed since this process started."""
+        if self._start_ts is None:
+            return 0.0
+        return time.time() - self._start_ts
+
+    def _window_used(self, doc):
+        """
+        How many seconds of the budget have been consumed in this window,
+        INCLUDING the time elapsed in the current run (not yet flushed to Atlas).
+        """
+        base = float(doc.get("used_seconds", 0))
+        return base + self._elapsed_this_run()
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def startup_check(self):
+        """
+        Called once at startup. Returns (ok: bool, message: str).
+
+        ok=False  → budget exhausted; caller should refuse to start.
+        ok=True   → cleared to run; heartbeat thread should be started.
+        """
+        if not BUDGET_ENABLED:
+            return True, "Budget tracking disabled (no MONGO_URI / DAILY_BUDGET_HOURS=0)"
+
+        if not self._connect():
+            # If Atlas is unreachable, fail open with a warning so a transient
+            # network blip doesn't brick the instance permanently.
+            log.warning("[budget] Could not reach Atlas — starting without budget enforcement")
+            return True, "Atlas unreachable — running without budget enforcement"
+
+        now = time.time()
+        window_secs = 24 * 3600
+        doc = self._col.find_one({"_id": INSTANCE_NAME})
+
+        if doc is None:
+            # First ever run — create the document
+            self._col.insert_one({
+                "_id":                INSTANCE_NAME,
+                "window_start":       self._now_iso(),
+                "used_seconds":       0.0,
+                "last_heartbeat":     self._now_iso(),
+                "last_session_start": self._now_iso(),
+            })
+            self._start_ts = now
+            log.info(f"[budget] New instance '{INSTANCE_NAME}' — full budget of {DAILY_BUDGET_HOURS}h available")
+            return True, f"New session — {DAILY_BUDGET_HOURS}h budget available"
+
+        # Check whether the 24-hour window has expired
+        try:
+            from datetime import timezone
+            ws_str = doc["window_start"].replace("Z", "+00:00")
+            ws_dt  = datetime.fromisoformat(ws_str)
+            window_age = datetime.now(timezone.utc) - ws_dt
+            window_age_secs = window_age.total_seconds()
+        except Exception as e:
+            log.warning(f"[budget] Could not parse window_start: {e} — resetting window")
+            window_age_secs = window_secs + 1   # force reset
+
+        if window_age_secs >= window_secs:
+            # Window expired → reset
+            self._col.update_one({"_id": INSTANCE_NAME}, {"$set": {
+                "window_start":       self._now_iso(),
+                "used_seconds":       0.0,
+                "last_heartbeat":     self._now_iso(),
+                "last_session_start": self._now_iso(),
+            }})
+            self._start_ts = now
+            log.info(f"[budget] 24h window expired — resetting. Full {DAILY_BUDGET_HOURS}h available")
+            return True, f"24h window reset — {DAILY_BUDGET_HOURS}h budget available"
+
+        # Window is current — check remaining budget
+        used = float(doc.get("used_seconds", 0))
+        remaining = DAILY_BUDGET_SECONDS - used
+        hours_used      = used / 3600
+        hours_remaining = remaining / 3600
+
+        if remaining <= 0:
+            msg = (f"Daily budget exhausted for '{INSTANCE_NAME}': "
+                   f"{hours_used:.2f}h used of {DAILY_BUDGET_HOURS}h. "
+                   f"Resets in {(window_secs - window_age_secs)/3600:.1f}h.")
+            log.error(f"[budget] REFUSING TO START — {msg}")
+            return False, msg
+
+        # Crashed-and-came-back: resume remaining budget
+        self._start_ts = now
+        self._col.update_one({"_id": INSTANCE_NAME}, {"$set": {
+            "last_heartbeat":     self._now_iso(),
+            "last_session_start": self._now_iso(),
+        }})
+        log.info(f"[budget] '{INSTANCE_NAME}' resuming — {hours_used:.2f}h used, "
+                 f"{hours_remaining:.2f}h remaining of {DAILY_BUDGET_HOURS}h")
+        return True, (f"Resuming session — {hours_used:.2f}h used, "
+                      f"{hours_remaining:.2f}h remaining")
+
+    def status(self):
+        """Return a JSON-serialisable dict for /api/status."""
+        if not BUDGET_ENABLED:
+            return {"enabled": False}
+
+        elapsed = self._elapsed_this_run()
+        out = {
+            "enabled":        True,
+            "instance":       INSTANCE_NAME,
+            "budget_hours":   DAILY_BUDGET_HOURS,
+            "elapsed_this_run_seconds": round(elapsed),
+        }
+
+        if not self._connect():
+            out["error"] = "Atlas unreachable"
+            return out
+
+        doc = self._col.find_one({"_id": INSTANCE_NAME})
+        if doc:
+            used      = float(doc.get("used_seconds", 0)) + elapsed
+            remaining = max(0.0, DAILY_BUDGET_SECONDS - used)
+            out["used_seconds"]      = round(used)
+            out["remaining_seconds"] = round(remaining)
+            out["used_hours"]        = round(used / 3600, 3)
+            out["remaining_hours"]   = round(remaining / 3600, 3)
+            out["window_start"]      = doc.get("window_start")
+            out["last_heartbeat"]    = doc.get("last_heartbeat")
+        return out
+
+    def _heartbeat_loop(self):
+        """Background thread: write heartbeat + check budget every HEARTBEAT_INTERVAL s."""
+        while not self._stop_evt.is_set():
+            self._stop_evt.wait(timeout=HEARTBEAT_INTERVAL)
+            if self._stop_evt.is_set():
+                break
+            self._tick()
+
+    def _tick(self):
+        """Single heartbeat: flush elapsed time to Atlas and check if budget exceeded."""
+        if not BUDGET_ENABLED or self._start_ts is None:
+            return
+        if not self._connect():
+            log.warning("[budget] Heartbeat skipped — Atlas unreachable")
+            return
+
+        elapsed = self._elapsed_this_run()
+
+        try:
+            # Read current used_seconds from Atlas, then update atomically
+            doc = self._col.find_one({"_id": INSTANCE_NAME}, {"used_seconds": 1})
+            base_used = float(doc.get("used_seconds", 0)) if doc else 0.0
+
+            # Store only the portion elapsed since last heartbeat flush.
+            # We track _start_ts and write the running total each tick.
+            new_used = base_used + elapsed
+
+            self._col.update_one({"_id": INSTANCE_NAME}, {"$set": {
+                "used_seconds":   new_used,
+                "last_heartbeat": self._now_iso(),
+            }})
+
+            # Reset _start_ts so next tick doesn't double-count
+            self._start_ts = time.time()
+
+            hours_used      = new_used / 3600
+            hours_remaining = max(0, (DAILY_BUDGET_SECONDS - new_used)) / 3600
+            log.info(f"[budget] Heartbeat — {hours_used:.3f}h used, "
+                     f"{hours_remaining:.3f}h remaining")
+
+            if new_used >= DAILY_BUDGET_SECONDS:
+                log.warning(f"[budget] Budget exhausted! Initiating clean shutdown…")
+                self._shutdown_system()
+
+        except Exception as e:
+            log.error(f"[budget] Heartbeat error: {e}")
+
+    def _shutdown_system(self):
+        """Stop all profiles then kill the process."""
+        self._stop_evt.set()
+        log.info("[budget] Stopping all profiles before exit…")
+        for pid in list(sessions):
+            try:
+                stop_profile(pid)
+            except Exception as e:
+                log.warning(f"[budget] Error stopping {pid}: {e}")
+        time.sleep(2)
+        log.info("[budget] Clean shutdown complete — daily budget exhausted.")
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    def start_heartbeat(self):
+        """Start the background heartbeat thread."""
+        if BUDGET_ENABLED:
+            t = threading.Thread(target=self._heartbeat_loop, daemon=True)
+            t.start()
+            log.info(f"[budget] Heartbeat thread started (every {HEARTBEAT_INTERVAL}s)")
+
+    def on_shutdown(self):
+        """Call this from the SIGTERM/SIGINT handler to flush final elapsed time."""
+        self._stop_evt.set()
+        if not BUDGET_ENABLED or self._start_ts is None:
+            return
+        if not self._connect():
+            return
+        elapsed = self._elapsed_this_run()
+        try:
+            doc = self._col.find_one({"_id": INSTANCE_NAME}, {"used_seconds": 1})
+            base = float(doc.get("used_seconds", 0)) if doc else 0.0
+            self._col.update_one({"_id": INSTANCE_NAME}, {"$set": {
+                "used_seconds":   base + elapsed,
+                "last_heartbeat": self._now_iso(),
+            }})
+            log.info(f"[budget] Final flush: {(base + elapsed)/3600:.3f}h total used")
+        except Exception as e:
+            log.error(f"[budget] Final flush error: {e}")
+
+
+budget = BudgetTracker()
 
 sessions: dict = {}
 _ka_active: dict = {}
@@ -721,10 +998,16 @@ threading.Thread(target=_fetch_server_location, daemon=True).start()
 def api_status():
     return jsonify({"running": len(sessions), "chrome_bin": CHROME_BIN,
                     "novnc_path": NOVNC_PATH, "time": datetime.now().isoformat(),
-                    "location": _server_location})
+                    "location": _server_location,
+                    "budget": budget.status()})
+
+@app.route("/api/budget", methods=["GET"])
+def api_budget():
+    return jsonify(budget.status())
 
 def _shutdown(sig, frame):
     log.info("Shutting down...")
+    budget.on_shutdown()
     for pid in list(sessions): stop_profile(pid)
     sys.exit(0)
 
@@ -732,6 +1015,17 @@ signal.signal(signal.SIGINT,  _shutdown)
 signal.signal(signal.SIGTERM, _shutdown)
 
 if __name__ == "__main__":
+    # ── Budget startup check ──────────────────────────────────────────────────
+    ok, msg = budget.startup_check()
+    if not ok:
+        # Print to both stdout and the log file so it's visible everywhere
+        print(f"\n[CloudSurf] STARTUP BLOCKED — {msg}\n", flush=True)
+        log.error(f"STARTUP BLOCKED — {msg}")
+        sys.exit(1)
+    if BUDGET_ENABLED:
+        log.info(f"[budget] {msg}")
+        budget.start_heartbeat()
+
     log.info(f"CloudSurf :{API_PORT} | chrome={CHROME_BIN} | novnc={NOVNC_PATH}")
     if AUTO_LAUNCH_IDS:
         log.info(f"Auto-launch enabled for: {AUTO_LAUNCH_IDS}")

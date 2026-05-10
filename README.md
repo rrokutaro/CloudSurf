@@ -147,6 +147,30 @@ Profile IDs are the folder names inside `profiles/` — they look like `alice_12
 | `CLOUDSURF_SCRIPT_REPEAT` | `1` | How many times to run the script per profile. `1` = run once. `0` = run forever until the profile stops. Any other number = run that many times. |
 | `CLOUDSURF_SCRIPT_INTERVAL` | `60` | Seconds to wait between repeated script runs. Only relevant when `CLOUDSURF_SCRIPT_REPEAT` is `0` or greater than `1`. |
 
+#### Daily budget (Atlas-backed runtime limiter)
+
+| Secret | Default | Description |
+|---|---|---|
+| `CLOUDSURF_MONGO_URI` | *(unset = off)* | MongoDB Atlas connection string. Required to enable budget tracking. e.g. `mongodb+srv://user:pass@cluster.mongodb.net/cloudsurf` |
+| `CLOUDSURF_DAILY_BUDGET_HOURS` | `0` (unlimited) | How many hours per 24-hour window this instance may run. e.g. `7` → shuts down automatically after 7 hours. Resets at the start of each new 24-hour window. |
+| `CLOUDSURF_INSTANCE_NAME` | hostname / `CODESPACE_NAME` | Unique name for this instance. Lets multiple Codespaces share the same Atlas database without colliding. e.g. `colab-worker-1` |
+
+**How the budget works:**
+
+1. **Startup check** — CloudSurf queries Atlas for this instance's record. If the 24-hour window has expired it resets. If the budget is already exhausted it refuses to start entirely (exit code 1).
+2. **Crash recovery** — if the instance crashed and restarts within the same 24-hour window, it resumes the remaining budget automatically.
+3. **Heartbeat** — a background thread writes to Atlas every 60 seconds so the consumed time is durable even across crashes.
+4. **Budget exhausted** — all running profiles are stopped cleanly and the process exits. The next startup (after the window resets) will succeed normally.
+
+Check budget status at any time:
+```bash
+curl http://localhost:7860/api/budget
+```
+
+**Atlas collection:** `cloudsurf_sessions` in whatever database your URI points to (defaults to `cloudsurf`). One document per `CLOUDSURF_INSTANCE_NAME`.
+
+---
+
 #### Keep-alive
 
 | Secret | Default | Description |
