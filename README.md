@@ -338,3 +338,8 @@ cloudsurf/
 * **VNC performance** — x11vnc is tuned for low latency; NoVNC runs at max quality with no compression
 * **Script logs** — check `logs/manager.log` to see script run results, repeat counts, and any errors
 * **Updating** — pull new changes in an existing Codespace with `git pull && bash stop.sh && bash start.sh`
+
+---
+
+## Related
+- [CloudSurf Runner](https://github.com/rrokutaro/CloudSurf-Runner)
